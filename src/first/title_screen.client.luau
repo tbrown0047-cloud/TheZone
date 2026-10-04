@@ -48,9 +48,20 @@ local MONO = Font.new("rbxasset://fonts/families/RobotoMono.json")
 local LOGO_FONT = Font.new("rbxasset://fonts/families/Montserrat.json", Enum.FontWeight.Heavy)
 local LOGO_COLOR = Color3.fromRGB(242, 242, 242)
 
+-- Hides all core UI while the title is up. On the way out it brings back only
+-- chat, the player list and emotes: the game's own HUD replaces Roblox's
+-- backpack bar and health bar.
+local RESTORED_CORE_GUI = { Enum.CoreGuiType.Chat, Enum.CoreGuiType.PlayerList, Enum.CoreGuiType.EmotesMenu }
+
 local function setCoreGui(enabled: boolean)
 	pcall(function()
-		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, enabled)
+		if enabled then
+			for _, coreType in RESTORED_CORE_GUI do
+				StarterGui:SetCoreGuiEnabled(coreType, true)
+			end
+		else
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+		end
 	end)
 end
 

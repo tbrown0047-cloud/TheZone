@@ -1,1 +1,2 @@
-print("Hello world, from server!")
+require(script.InventoryService).Start()
+require(script.HudService).Start()
