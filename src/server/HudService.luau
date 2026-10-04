@@ -1,7 +1,7 @@
 --!strict
 -- Broadcasts kills for the HUD kill feed. The killer comes from the standard
--- "creator" ObjectValue tag that weapons (including SPEARHEAD, see its
--- rblxDamageTags setting) leave in the victim's Humanoid.
+-- "creator" ObjectValue tag that weapons leave in the victim's Humanoid.
+-- If your ACS copy doesn't tag kills, the feed still shows deaths ([KIA]).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")

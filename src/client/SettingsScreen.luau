@@ -64,8 +64,7 @@ local PAGES: { [string]: { Row } } = {
 		{ kind = "info", label = "Primary", value = "1" },
 		{ kind = "info", label = "Secondary", value = "2" },
 		{ kind = "info", label = "Sidearm", value = "3" },
-		{ kind = "info", label = "Flashlight (SPEARHEAD)", value = "H" },
-		{ kind = "info", label = "Laser (SPEARHEAD)", value = "J" },
+		{ kind = "info", label = "Fire, reload, aim and attachments", value = "SET BY ACS" },
 	},
 }
 

@@ -1,17 +1,51 @@
 -- Item artwork. Uses the item's uploaded icon if it has one; for guns,
--- renders the SPEARHEAD weapon model (ReplicatedStorage.SPH_Assets.WeaponModels)
--- in a ViewportFrame so icons match the guns in game automatically.
+-- renders the gun's model in a ViewportFrame so icons match the guns in game.
+-- Models come from the folders in WeaponConfig.MODEL_FOLDERS (ACS's
+-- GunModels), or from the gun's Tool if the player is carrying it.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local WeaponConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("WeaponConfig"))
 
 local ItemIcon = {}
 
 local STRIP = { "LuaSourceContainer", "Sound", "ParticleEmitter", "Beam", "Trail", "Light", "Attachment" }
 
 local function findModel(name: string): Instance?
-	local assets = ReplicatedStorage:FindFirstChild("SPH_Assets")
-	local models = assets and assets:FindFirstChild("WeaponModels")
-	return models and models:FindFirstChild(name)
+	for _, path in WeaponConfig.MODEL_FOLDERS do
+		local node: Instance? = ReplicatedStorage
+		for _, part in path do
+			node = node and node:FindFirstChild(part)
+		end
+		local model = node and node:FindFirstChild(name)
+		if model then
+			return model
+		end
+	end
+	-- Fall back to the Tool itself, if the player is carrying it
+	local player = Players.LocalPlayer
+	for _, container in { player:FindFirstChildOfClass("Backpack"), player.Character } :: { Instance? } do
+		local tool = container and container:FindFirstChild(name)
+		if tool and tool:IsA("Tool") then
+			return tool
+		end
+	end
+	return nil
+end
+
+-- Tools aren't Models, so copy their parts into one to measure and display.
+local function asModel(source: Instance): Instance
+	local clone = source:Clone()
+	if clone:IsA("Tool") then
+		local model = Instance.new("Model")
+		for _, child in clone:GetChildren() do
+			child.Parent = model
+		end
+		clone:Destroy()
+		return model
+	end
+	return clone
 end
 
 local function bounds(model: Instance): (CFrame?, Vector3?)
@@ -57,7 +91,7 @@ function ItemIcon.render(parent: GuiObject, def: any, aspect: number, rot: boole
 	viewport.LightColor = Color3.new(1, 1, 1)
 	viewport.LightDirection = Vector3.new(-0.4, -1, -0.6)
 
-	local model = source:Clone()
+	local model = asModel(source)
 	for _, d in model:GetDescendants() do
 		for _, className in STRIP do
 			if d:IsA(className) then

@@ -304,7 +304,7 @@ function CharacterScreen.new(ctx: any, parent: Instance)
 		})
 		inspect.Visible = true
 
-		-- SPEARHEAD WeaponStats, fetched from the server
+		-- Stats from the gun's ACS_Settings, fetched from the server
 		if def.tool then
 			task.spawn(function()
 				local ok, _, stats = Net.Action("inspect", item.uid)

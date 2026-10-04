@@ -4,7 +4,7 @@
 --   centre        score popups ("ENEMY KILLED  100")
 --   bottom left   rotating radar, coordinates and squad list with health
 --   bottom right  ammo, health, hydration/energy and the 1 / 2 / 3 weapon strip
--- Keys 1/2/3 equip the SPEARHEAD Tool for the gun in each weapon slot.
+-- Keys 1/2/3 equip the gun Tool (ACS) for the gun in each weapon slot.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,6 +15,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Inventory = require(Shared:WaitForChild("Inventory"))
 local ItemDefs = require(Shared:WaitForChild("ItemDefs"))
 local UIConfig = require(Shared:WaitForChild("UIConfig"))
+local WeaponConfig = require(Shared:WaitForChild("WeaponConfig"))
 
 local ItemIcon = require(script.Parent.ItemIcon)
 local Theme = require(script.Parent.Theme)
@@ -22,11 +23,6 @@ local Theme = require(script.Parent.Theme)
 local C = Theme.Color
 local KEYS = { [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3 }
 
--- Names the ammo readout looks for on the equipped Tool, as attributes or as
--- IntValue/NumberValue descendants. Add SPEARHEAD's names here if they differ.
-local AMMO_KEYS = { "Ammo", "MagAmmo", "CurrentAmmo", "Mag", "Clip" }
-local RESERVE_KEYS = { "StoredAmmo", "ReserveAmmo", "Reserve", "SpareAmmo", "AmmoPool" }
-local FIREMODE_KEYS = { "FireMode", "Firemode", "Mode" }
 
 local RADAR_SIZE = 240
 local RADAR_RANGE = 150 -- studs from centre to edge
@@ -36,6 +32,31 @@ local MAX_FEED = 5
 
 local Hud = {}
 
+-- Settings module inside a gun Tool (ACS_Settings), required on the client.
+-- ACS keeps the live ammo count in this table, so reading it tracks shots.
+local settingsCache: { [Tool]: any } = setmetatable({}, { __mode = "k" }) :: any
+
+local function settingsOf(tool: Tool): any
+	local cached = settingsCache[tool]
+	if cached ~= nil then
+		return cached or nil
+	end
+	local result = false
+	for _, name in WeaponConfig.STATS_MODULES do
+		local module = tool:FindFirstChild(name, true)
+		if module and module:IsA("ModuleScript") then
+			local ok, value = pcall(require, module)
+			if ok and type(value) == "table" then
+				result = value
+				break
+			end
+		end
+	end
+	settingsCache[tool] = result
+	return result or nil
+end
+
+-- Looks for a value as an attribute, a Value object, then a settings field.
 local function readValue(tool: Tool, keys: { string }): any
 	for _, key in keys do
 		local attr = tool:GetAttribute(key)
@@ -45,6 +66,14 @@ local function readValue(tool: Tool, keys: { string }): any
 		local child = tool:FindFirstChild(key, true)
 		if child and child:IsA("ValueBase") then
 			return (child :: any).Value
+		end
+	end
+	local settings = settingsOf(tool)
+	if settings then
+		for _, key in keys do
+			if settings[key] ~= nil then
+				return settings[key]
+			end
 		end
 	end
 	return nil
@@ -347,7 +376,7 @@ function Hud.new(playerGui: PlayerGui)
 		Position = UDim2.fromOffset(100, 14),
 		Size = UDim2.fromOffset(236, 64),
 	})
-	Theme.create("Frame", { Parent = bottomRight, BackgroundColor3 = C.Text, BackgroundTransparency = 0.8, BorderSizePixel = 0, Position = UDim2.fromOffset(350, 30), Size = UDim2.fromOffset(1, 40) })
+	local ammoDivider = Theme.create("Frame", { Parent = bottomRight, BackgroundColor3 = C.Text, BackgroundTransparency = 0.8, BorderSizePixel = 0, Position = UDim2.fromOffset(350, 30), Size = UDim2.fromOffset(1, 40) })
 	local reserveLabel = Theme.label({
 		Parent = bottomRight,
 		FontFace = Theme.Font.Mono,
@@ -356,6 +385,11 @@ function Hud.new(playerGui: PlayerGui)
 		Position = UDim2.fromOffset(364, 40),
 		Size = UDim2.fromOffset(96, 30),
 	})
+	-- ACS has its own ammo HUD; WeaponConfig.SHOW_HUD_AMMO picks which one shows
+	magLabel.Visible = WeaponConfig.SHOW_HUD_AMMO
+	reserveLabel.Visible = WeaponConfig.SHOW_HUD_AMMO
+	ammoDivider.Visible = WeaponConfig.SHOW_HUD_AMMO
+
 	local vitalsLabel = Theme.label({
 		Parent = bottomRight,
 		FontFace = Theme.Font.Mono,
@@ -446,10 +480,10 @@ function Hud.new(playerGui: PlayerGui)
 			reserveLabel.Text = ""
 			return
 		end
-		local mode = readValue(tool, FIREMODE_KEYS)
-		weaponLabel.Text = string.upper(tool.Name) .. (if mode ~= nil then "  ·  " .. string.upper(tostring(mode)) else "")
-		local mag = readValue(tool, AMMO_KEYS)
-		local reserve = readValue(tool, RESERVE_KEYS)
+		local mode = readValue(tool, WeaponConfig.FIREMODE_KEYS)
+		weaponLabel.Text = string.upper(tool.Name) .. (if type(mode) == "string" then "  ·  " .. string.upper(mode) else "")
+		local mag = readValue(tool, WeaponConfig.AMMO_KEYS)
+		local reserve = readValue(tool, WeaponConfig.RESERVE_KEYS)
 		if type(mag) == "number" then
 			magLabel.Text = string.format("%03d", math.max(0, math.floor(mag)))
 			magLabel.TextColor3 = if mag <= 5 then C.Danger else C.Text

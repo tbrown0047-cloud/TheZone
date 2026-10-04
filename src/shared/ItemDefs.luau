@@ -1,9 +1,9 @@
 --!strict
 -- Every item the inventory knows about. Sizes are in grid cells.
 --
--- Guns: `tool` must match the SPEARHEAD Tool's name exactly (the Tool is
--- cloned from ServerStorage.Weapons when the gun is equipped, and its model in
--- ReplicatedStorage.SPH_Assets.WeaponModels is used for the icon).
+-- Guns: `tool` must match the ACS gun Tool's name exactly (the Tool is cloned
+-- from ServerStorage.Weapons when the gun is equipped, and its model in
+-- ReplicatedStorage.ACS_Engine.GunModels is used for the icon; see WeaponConfig).
 -- `icon` is optional: an uploaded image ID overrides the auto-generated icon.
 
 export type ItemDef = {

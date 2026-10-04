@@ -1,7 +1,8 @@
 --!strict
 -- Server-authoritative inventory. Owns every player's items, money, vitals and
 -- settings, validates every client request, saves to a DataStore, and turns
--- guns in the Primary / Secondary / Sidearm slots into SPEARHEAD Tools.
+-- guns in the Primary / Secondary / Sidearm slots into gun Tools (ACS; see
+-- Shared.WeaponConfig).
 
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -14,6 +15,7 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Inventory = require(Shared:WaitForChild("Inventory"))
 local ItemDefs = require(Shared:WaitForChild("ItemDefs"))
 local VendorDefs = require(Shared:WaitForChild("VendorDefs"))
+local WeaponConfig = require(Shared:WaitForChild("WeaponConfig"))
 
 type ItemInst = Inventory.ItemInst
 type Data = {
@@ -42,6 +44,14 @@ local store: DataStore? = nil
 local warnedNoStore = false
 local warnedMissingTool: { [string]: boolean } = {}
 local statsCache: { [string]: { { string } } } = {}
+
+-- Tool names of every gun the inventory manages
+local inventoryToolNames: { [string]: boolean } = {}
+for _, def in ItemDefs do
+	if def.tool then
+		inventoryToolNames[def.tool] = true
+	end
+end
 
 --------------------------------------------------------------------------------
 -- Data helpers
@@ -181,11 +191,11 @@ local function save(player: Player)
 end
 
 --------------------------------------------------------------------------------
--- SPEARHEAD tools
+-- Gun tools (ACS)
 --------------------------------------------------------------------------------
 
 local function findToolTemplate(name: string): Tool?
-	local weapons = ServerStorage:FindFirstChild("Weapons")
+	local weapons = ServerStorage:FindFirstChild(WeaponConfig.TOOLS_FOLDER)
 	local tool = weapons and weapons:FindFirstChild(name)
 	if not tool then
 		tool = StarterPack:FindFirstChild(name)
@@ -195,7 +205,7 @@ local function findToolTemplate(name: string): Tool?
 	end
 	if not warnedMissingTool[name] then
 		warnedMissingTool[name] = true
-		warn(`[Inventory] No SPEARHEAD Tool named "{name}" in ServerStorage.Weapons; the gun will show in the inventory but can't be fired.`)
+		warn(`[Inventory] No {WeaponConfig.SYSTEM_NAME} Tool named "{name}" in ServerStorage.{WeaponConfig.TOOLS_FOLDER}; the gun will show in the inventory but can't be fired.`)
 	end
 	return nil
 end
@@ -229,13 +239,16 @@ local function syncTools(player: Player)
 		end
 	end
 
-	-- Remove tools for guns that left their slot
+	-- Remove tools for guns that left their slot, plus loose copies of
+	-- inventory guns (e.g. handed out by StarterPack) the inventory didn't issue
 	for _, container in { backpack, player.Character } :: { Instance? } do
 		if container then
 			for _, child in container:GetChildren() do
-				local uid = child:IsA("Tool") and child:GetAttribute("ItemUid")
-				if type(uid) == "string" and not wanted[uid] then
-					child:Destroy()
+				if child:IsA("Tool") then
+					local uid = child:GetAttribute("ItemUid")
+					if (type(uid) == "string" and not wanted[uid]) or (uid == nil and inventoryToolNames[child.Name]) then
+						child:Destroy()
+					end
 				end
 			end
 		end
@@ -257,28 +270,55 @@ local function syncTools(player: Player)
 	end
 end
 
--- Top-level scalar settings from a SPEARHEAD WeaponStats module, for the
--- inspect panel.
+-- Turns a settings value into display text. Handles plain values and
+-- {min, max} pairs (ACS stores some damage values that way).
+local function formatStat(value: any): string?
+	local kind = type(value)
+	if kind == "number" then
+		return string.format("%g", value)
+	elseif kind == "string" or kind == "boolean" then
+		return tostring(value)
+	elseif kind == "table" and type(value[1]) == "number" and type(value[2]) == "number" and #value == 2 then
+		return string.format("%g – %g", value[1], value[2])
+	end
+	return nil
+end
+
+-- Rows for the inspect panel from the gun's settings module (ACS_Settings).
+-- Uses WeaponConfig.STAT_FIELDS when any of them exist, otherwise lists every
+-- simple field.
 local function weaponStats(toolName: string): { { string } }
 	if statsCache[toolName] then
 		return statsCache[toolName]
 	end
 	local rows = {}
 	local template = findToolTemplate(toolName)
-	local module = template and template:FindFirstChild("WeaponStats", true)
+	local module: Instance? = nil
+	for _, name in WeaponConfig.STATS_MODULES do
+		module = module or (template and template:FindFirstChild(name, true))
+	end
 	if module and module:IsA("ModuleScript") then
 		local ok, stats = pcall(require, module)
 		if ok and type(stats) == "table" then
-			for key, value in stats :: { [any]: any } do
-				local kind = type(value)
-				if type(key) == "string" and (kind == "number" or kind == "string" or kind == "boolean") then
-					local text = if kind == "number" then string.format("%g", value) else tostring(value)
-					table.insert(rows, { key, text })
+			local seenLabels = {}
+			for _, field in WeaponConfig.STAT_FIELDS do
+				local text = formatStat((stats :: any)[field[1]])
+				if text and not seenLabels[field[2]] then
+					seenLabels[field[2]] = true
+					table.insert(rows, { field[2], text })
 				end
 			end
-			table.sort(rows, function(a, b)
-				return a[1] < b[1]
-			end)
+			if #rows == 0 then
+				for key, value in stats :: { [any]: any } do
+					local text = formatStat(value)
+					if type(key) == "string" and text then
+						table.insert(rows, { key, text })
+					end
+				end
+				table.sort(rows, function(a, b)
+					return a[1] < b[1]
+				end)
+			end
 		end
 	end
 	statsCache[toolName] = rows
@@ -659,7 +699,9 @@ function InventoryService.Start()
 		profiles[player] = load(player)
 		player.CharacterAdded:Connect(function()
 			-- The Backpack is recreated on respawn; re-issue equipped guns.
+			-- Run again shortly after, once StarterPack copies have arrived.
 			task.defer(syncTools, player)
+			task.delay(1, syncTools, player)
 		end)
 		if player.Character then
 			task.defer(syncTools, player)

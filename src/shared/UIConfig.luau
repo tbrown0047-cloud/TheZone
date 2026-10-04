@@ -30,8 +30,8 @@ return {
 	NEWS = {
 		title = "LIVE UPDATE",
 		summary = "Stay ahead in the ever-evolving zone. Here you'll find real-time insights, hotfixes, patch notes and server status.",
-		body = "BUILD 0.1\n\n• New main menu, character and vendor screens\n• Grid inventory with drag and drop, rotation (R) and quick move (double-click)\n• SPEARHEAD weapons equip straight from your Primary, Secondary and Sidearm slots\n• Vendors and tasks\n• Hydration and energy now drain over time",
+		body = "BUILD 0.1\n\n• New main menu, character and vendor screens\n• Grid inventory with drag and drop, rotation (R) and quick move (double-click)\n• ACS weapons equip straight from your Primary, Secondary and Sidearm slots\n• Vendors and tasks\n• Hydration and energy now drain over time",
 	},
 
-	CREDITS = "THE ZONE\n\nWeapon system: SPEARHEAD by Nyemse (GPL-3.0)\nNetworking: BridgeNet by ffrostfall\nBallistics: FastCast and PartCache by Xan_TheDragon\n\nThanks for playing.",
+	CREDITS = "THE ZONE\n\nWeapon system: ACS (Advanced Combat System) by 00scorpion00\n\nThanks for playing.",
 }
