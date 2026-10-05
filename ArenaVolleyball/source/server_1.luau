@@ -67,7 +67,9 @@ local phase = "idle" -- idle, setup, serve, rally, point, setover, matchover
 local matchActive = false -- no match runs until someone starts one from the menu
 local servingTeam = 1
 local serveAt, serveDeadline, phaseUntil = 0, 0, 0
+local paused, pausedAt = false, 0 -- the pause menu really stops the match
 local sendState, sendBall, currentServer, setupServe, stopMatch -- defined further down
+local onMatchFinished -- career and online results, defined further down
 
 ---------------------------------------------------------------- court
 
@@ -182,6 +184,61 @@ part({
 	Transparency = 1,
 	CastShadow = false,
 })
+
+-- stands with a crowd along both sidelines, and floodlights
+do
+	local crowdRng = Random.new(7)
+	local CROWD = {
+		Color3.fromRGB(220, 60, 60), Color3.fromRGB(60, 120, 230), Color3.fromRGB(240, 200, 60),
+		Color3.fromRGB(240, 240, 240), Color3.fromRGB(40, 40, 50), Color3.fromRGB(60, 180, 110),
+		Color3.fromRGB(200, 90, 200),
+	}
+	local standLength = Config.COURT_LENGTH + 30
+	for _, sx in { -1, 1 } do
+		for tier = 0, 4 do
+			local height = 1.5 + tier * 1.6
+			local x = C.X + sx * (HALF_W + 21 + tier * 3)
+			part({
+				Name = "Stand",
+				Size = Vector3.new(3, height, standLength),
+				CFrame = CFrame.new(x, groundY + height / 2, C.Z),
+				Color = Color3.fromRGB(46, 50, 66),
+				Material = Enum.Material.Concrete,
+			})
+			for k = 1, 20 do
+				if crowdRng:NextNumber() < 0.8 then
+					local z = C.Z - standLength / 2 + k * standLength / 21 + crowdRng:NextNumber(-0.6, 0.6)
+					part({
+						Name = "Fan",
+						Size = Vector3.new(1.3, 2.3, 1.3),
+						CFrame = CFrame.new(x, groundY + height + 1.15, z),
+						Color = CROWD[crowdRng:NextInteger(1, #CROWD)],
+						CanCollide = false,
+						CanQuery = false,
+						CanTouch = false,
+					})
+				end
+			end
+		end
+	end
+	for _, corner in { { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 } } do
+		local lamp = part({
+			Name = "Floodlight",
+			Size = Vector3.new(3, 1, 3),
+			CFrame = CFrame.lookAt(Vector3.new(C.X + corner[1] * (HALF_W + 10), GY + 42, C.Z + corner[2] * (HALF_L - 6)), C) * CFrame.Angles(-math.pi / 2, 0, 0),
+			Color = Color3.fromRGB(250, 248, 230),
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CastShadow = false,
+		})
+		local light = Instance.new("SpotLight")
+		light.Face = Enum.NormalId.Top
+		light.Angle = 70
+		light.Range = 60
+		light.Brightness = 2
+		light.Parent = lamp
+	end
+end
 
 ---------------------------------------------------------------- shared objects for the client
 

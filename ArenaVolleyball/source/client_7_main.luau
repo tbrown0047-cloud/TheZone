@@ -2,6 +2,49 @@
 ---------------------------------------------------------------- messages from the server
 
 local recordedMatch = false
+local lastShotPower = false
+
+-- plays one of your sounds from Config.SOUNDS (0 = none), at a spot or everywhere
+local SoundService = game:GetService("SoundService")
+local function playSound(name, pos)
+	local id = Config.SOUNDS and tonumber(Config.SOUNDS[name])
+	if not id or id <= 0 then
+		return
+	end
+	local sound = Instance.new("Sound")
+	sound.SoundId = "rbxassetid://" .. id
+	if pos then
+		local holder = worldPart({ Size = Vector3.one * 0.2, CFrame = CFrame.new(pos), Transparency = 1 })
+		sound.Parent = holder
+		sound:Play()
+		task.delay(6, function()
+			holder:Destroy()
+		end)
+	else
+		SoundService:PlayLocalSound(sound)
+	end
+end
+
+-- a glow around a player who has just used an ability
+local function aura(model, color)
+	if not model then
+		return
+	end
+	local glow = Instance.new("Highlight")
+	glow.Adornee = model
+	glow.FillColor = color
+	glow.FillTransparency = 0.55
+	glow.OutlineColor = color
+	glow.Parent = world
+	TweenService:Create(glow, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { FillTransparency = 1, OutlineTransparency = 1 }):Play()
+	task.delay(1.7, function()
+		glow:Destroy()
+	end)
+end
+
+HUD.abilityButton.MouseButton1Down:Connect(function()
+	remote:FireServer("ability", {})
+end)
 
 remote.OnClientEvent:Connect(function(kind, a, b, c)
 	if kind == "ball" then
@@ -32,11 +75,16 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		elseif a.phase ~= "matchover" then
 			recordedMatch = false
 		end
-		if inMenu and Menu.waiting and me then
+		if me then
+			Menu.lastMode = a.mode
+		end
+		if inMenu and (Menu.waiting or Menu.queued) and me then
 			closeMenu()
 		elseif not inMenu and not me then
-			-- full time, or you were taken out of the match
-			openMenu("home")
+			-- full time, or you were taken out of the match: back to the hub you came from
+			local back = Menu.lastMode == "career" and "career" or Menu.lastMode == "online" and "onlinehub" or "home"
+			Menu.lastMode = nil
+			openMenu(back)
 			local last = history[#history]
 			if last and not a.active then
 				Menu.toast(string.format("FULL TIME   %s %s %s", Teams.list[last.home].short, last.score, Teams.list[last.away].short))
@@ -53,9 +101,15 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		if not inMenu then
 			HUD.refresh()
 		end
+		Menu.syncPause()
 	elseif kind == "banner" then
 		if not inMenu then
 			HUD.showBanner(a, b, c)
+			if b == "KILL" or b == "ACE" or b == "BLOCK" then
+				Cam.shake(0.5, 0.3)
+			end
+			playSound("whistle")
+			playSound("crowd")
 		end
 	elseif kind == "act" then
 		-- animation cue: your own dive and serve toss already played the moment you pressed
@@ -65,7 +119,14 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		end
 	elseif kind == "fx" then
 		if a == "hit" then
-			burst(b, Color3.new(1, 1, 1), 4)
+			local power = c and c.power == true
+			local fast = c and (c.speed or 0) > 60
+			burst(b, power and COL.gold or Color3.new(1, 1, 1), power and 7 or 4)
+			lastShotPower = power
+			playSound((c and (c.kind == "spike" or c.kind == "serve")) and "spike" or "hit", b)
+			if (power or fast) and not inMenu then
+				Cam.shake(power and 0.45 or 0.2, 0.25)
+			end
 			if c then
 				lastTouch.team, lastTouch.index = c.team or 0, c.index or 0
 				if c.user == player.UserId and c.kind ~= "serve" then
@@ -74,6 +135,15 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 				if not inMenu then
 					HUD.refresh()
 				end
+			end
+		elseif a == "ability" then
+			local info = c or {}
+			local color = (info.team == 1 or info.team == 2) and teamDef(info.team).primary or COL.violet
+			aura(b, COL.gold)
+			local who = entryAt(info.team or 0, info.index or 0)
+			if not inMenu then
+				HUD.showNotice((info.kind or "ABILITY") .. (who and ("   ·   #" .. who.number .. " " .. who.name) or ""), color)
+				HUD.refresh()
 			end
 		elseif a == "block" then
 			burst(b, Color3.fromRGB(255, 230, 120), 6)
@@ -84,6 +154,12 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		end
 	elseif kind == "miss" then
 		HUD.flash("MISSED", COL.dim)
+	elseif kind == "called" then
+		HUD.flash("QUICK SET CALLED", COL.teal)
+	elseif kind == "notice" then
+		Menu.waiting = false
+		Menu.loading.Visible = false
+		Menu.toast(a)
 	elseif kind == "cue" then
 		local keys = {
 			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK  (E to tip)", over = "CLICK" },
@@ -124,6 +200,8 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	local cf = CFrame.new(pos) * CFrame.Angles(spin, spin * 0.4, 0)
 	Ball.part.CFrame = cf
+	Ball.trail.Enabled = not hidden and ballState.mode == "fly" and ballState.v0.Magnitude > 45 and not state.paused
+	Ball.trail.Color = ColorSequence.new(lastShotPower and COL.gold or Color3.new(1, 1, 1))
 	Ball.part.Transparency = hidden and 1 or 0
 	for i, band in Ball.bands do
 		band.CFrame = cf * Ball.BAND_OFFSET[i]
@@ -195,8 +273,12 @@ RunService.RenderStepped:Connect(function(dt)
 	if not inMenu then
 		updatePrompts()
 		HUD.update(t, pos)
-		Cam.update(dt, pos)
 	end
+end)
+
+-- the camera runs after Roblox's own camera each frame, so ours wins
+RunService:BindToRenderStep("ArenaVolleyballCamera", Enum.RenderPriority.Camera.Value + 1, function(dt)
+	Cam.update(dt, ballAt(serverNow()))
 end)
 
 ---------------------------------------------------------------- start in the main menu

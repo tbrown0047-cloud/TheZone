@@ -92,6 +92,7 @@ local function launch(p, v, t, netDone, keepBounces)
 	if not keepBounces then
 		ball.bounces = 0
 		ball.netHit = false
+		ball.power = false
 	end
 	sendBall()
 end
@@ -152,6 +153,10 @@ local SET_WEIGHT = { OH = 4, OPP = 3, MB = 2 }
 -- The teammate a set goes to: a person if there is one, otherwise a front-row hitter
 -- (outside hitters most often, then the opposite, then a quick ball to the middle)
 local function partnerOf(slot)
+	local call = teams[slot.team].call
+	if call and call.untilT > now() and call.slot ~= slot and call.slot.root then
+		return call.slot, true
+	end
 	local options, total, person = {}, 0, nil
 	for _, s in teams[slot.team].slots do
 		if s ~= slot and s.root then
@@ -216,6 +221,60 @@ local function act(slot, kind)
 	if slot and slot.model then
 		remote:FireAllClients("act", slot.model, kind)
 	end
+end
+
+---------------------------------------------------------------- abilities
+-- Good plays fill a player's meter. When it's full, the ability (R) powers up his next move:
+--   POWER SPIKE (hitters): a much harder spike that's hard to block and hard to dig
+--   PERFECT SET (setters): a perfect set, and the hitter gets a power spike
+--   IRON WALL (middles): for 9 seconds every block he gets to is a stuff block
+--   SAFE HANDS (libero): for 9 seconds more reach and clean digs
+--   ACE SERVE (whoever is serving): a fast, flat serve that's hard to pass
+
+local ABILITY = { OH = "POWER SPIKE", OPP = "POWER SPIKE", MB = "IRON WALL", S = "PERFECT SET", L = "SAFE HANDS" }
+
+local function abilityOf(slot)
+	if phase == "serve" and currentServer() == slot then
+		return "ACE SERVE"
+	end
+	return ABILITY[roleOf(slot)] or "POWER SPIKE"
+end
+
+local function charge(slot, amount)
+	if slot then
+		slot.meter = math.min(100, (slot.meter or 0) + amount * (Config.ABILITY_CHARGE or 1))
+	end
+end
+
+local function boosted(slot, kind)
+	local b = slot and slot.boost
+	return b ~= nil and b.kind == kind and b.untilT > now()
+end
+
+local function spendBoost(slot)
+	local b = slot.boost
+	if b and b.uses then
+		b.uses -= 1
+		if b.uses <= 0 then
+			slot.boost = nil
+		end
+	end
+end
+
+local function activateAbility(slot)
+	if (slot.meter or 0) < 100 then
+		return false
+	end
+	local kind = abilityOf(slot)
+	slot.meter = 0
+	if kind == "IRON WALL" or kind == "SAFE HANDS" then
+		slot.boost = { kind = kind, untilT = now() + 9 }
+	else
+		slot.boost = { kind = kind, uses = 1, untilT = now() + 25 }
+	end
+	remote:FireAllClients("fx", "ability", slot.model, { kind = kind, team = slot.team, index = slot.index })
+	sendState()
+	return true
 end
 
 -- Keeps an aim point on the other half, at most `margin` studs past the lines
@@ -295,7 +354,7 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 	end
 	local d = bp - rootPos
 	local flat = Vector3.new(d.X, 0, d.Z).Magnitude
-	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5)
+	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5) + (boosted(slot, "SAFE HANDS") and 3 or 0)
 	if flat > reach then
 		return false
 	end
@@ -318,6 +377,12 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 		local speed = ballVel(t).Magnitude
 		if speed > 45 then
 			q -= math.min((speed - 45) / 90, 0.35) -- hard spikes are harder to pass
+		end
+		if ball.power then
+			q -= 0.25 -- power spikes and ace serves are harder still
+		end
+		if boosted(slot, "SAFE HANDS") then
+			q = math.max(q, 0.82)
 		end
 	end
 	return true, math.clamp(q, 0.05, 1)
@@ -342,18 +407,28 @@ local function shotFor(slot, kind, p, aim, q, touchNo)
 	elseif kind == "bump" then
 		return solve(p, ownSide(team, setSpot(team) + jitter((1 - q) * 9), 1.5), 1.25), "bump"
 	elseif kind == "set" then
-		local hitter = partnerOf(slot)
-		local quick = hitter.isAI and roleOf(hitter) == "MB" and TEAM_SIZE == 6
+		local hitter, called = partnerOf(slot)
+		local quick = called or (hitter.isAI and roleOf(hitter) == "MB" and TEAM_SIZE == 6)
+		teams[team].call = nil
+		if boosted(slot, "PERFECT SET") then
+			spendBoost(slot)
+			q = 1
+			hitter.boost = { kind = "POWER SPIKE", uses = 1, untilT = now() + 6 }
+		end
 		return solve(p, ownSide(team, attackSpot(team, hitter) + jitter((1 - q) * 6), 1.5), quick and 0.8 or 1.15), "set"
 	elseif kind == "tip" then
 		local target = aim and clampToOpp(team, aim, 0)
 			or floorPoint(3 - team, rng:NextNumber(-HALF_W + 3, HALF_W - 3), rng:NextNumber(3, 9))
 		return solveOver(p, target + jitter((1 - q) * 3), 0.8, 1.6), "tip"
 	end
-	local target = clampToOpp(team, aim or randomOpp(team, 3), 3) + jitter((1 - q) * 7)
-	local speed = spikeSpeed(slot, q)
+	local power = boosted(slot, "POWER SPIKE")
+	if power then
+		spendBoost(slot)
+	end
+	local target = clampToOpp(team, aim or randomOpp(team, 3), 3) + jitter((1 - q) * (power and 2.5 or 7))
+	local speed = spikeSpeed(slot, q) * (power and 1.3 or 1)
 	local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z).Magnitude
-	return solveOver(p, target, math.max(flat / speed, 0.28), 1.3), "spike"
+	return solveOver(p, target, math.max(flat / speed, 0.24), 1.3), "spike", power
 end
 
 local function touch(slot, kind, p, t, aim, q)
@@ -367,15 +442,20 @@ local function touch(slot, kind, p, t, aim, q)
 		awardPoint(3 - team, "FOUR HITS")
 		return false
 	end
-	local v, shot = shotFor(slot, kind, p, aim, q, n)
-	if n == 1 and ball.lastKind == "spike" and slot.stats then
-		slot.stats.digs += 1
+	local v, shot, power = shotFor(slot, kind, p, aim, q, n)
+	if n == 1 and ball.lastKind == "spike" then
+		if slot.stats then
+			slot.stats.digs += 1
+		end
+		charge(slot, 8)
 	end
+	charge(slot, q >= 0.85 and 12 or q >= 0.7 and 5 or 0)
 	ball.touches, ball.lastTeam, ball.lastSlot, ball.lastKind = n, team, slot, shot
 	slot.lastTouch = now()
 	launch(p, v, t)
+	ball.power = power == true
 	act(slot, kind)
-	remote:FireAllClients("fx", "hit", p, { kind = shot, q = q, user = slot.player and slot.player.UserId or 0, team = team, index = slot.index })
+	remote:FireAllClients("fx", "hit", p, { kind = shot, q = q, user = slot.player and slot.player.UserId or 0, team = team, index = slot.index, power = ball.power, speed = v.Magnitude })
 	sendState()
 	return true
 end
@@ -389,9 +469,17 @@ local function findBlocker(team, p)
 			local rp = hrp.Position
 			local depth = (rp.Z - C.Z) * s
 			local airborne = rp.Y > standHeight(sl) + 1
-			if airborne and depth > -0.5 and depth < 5 and math.abs(rp.X - p.X) < 3.8 and p.Y < rp.Y + 5.5 and p.Y > rp.Y - 1 then
+			local wall = boosted(sl, "IRON WALL")
+			local width = wall and 5.3 or 3.8
+			if airborne and depth > -0.5 and depth < 5 and math.abs(rp.X - p.X) < width and p.Y < rp.Y + 5.5 and p.Y > rp.Y - 1 then
 				local win = math.min(teamAI(team).blockWin * (0.7 + 0.6 * attr01(sl, "BLK")), 0.92)
-				if not (sl.isAI and rng:NextNumber() > win) then
+				if not sl.isAI then
+					win = 1
+				end
+				if ball.power then
+					win *= 0.35 -- a power spike usually breaks through
+				end
+				if wall or rng:NextNumber() <= win then
 					return sl
 				end
 			end
@@ -404,9 +492,10 @@ local function doBlock(blocker, p, v, t)
 	if blocker.stats then
 		blocker.stats.blocks += 1
 	end
+	charge(blocker, 15)
 	local back = -side(blocker.team) -- towards the attackers
 	local np, nv
-	if rng:NextNumber() < 0.6 then
+	if boosted(blocker, "IRON WALL") or rng:NextNumber() < 0.6 then
 		-- stuff block: straight back down on the attackers
 		np = Vector3.new(p.X, p.Y, C.Z + back * (R + 0.3))
 		nv = Vector3.new(v.X * 0.2 + rng:NextNumber(-4, 4), -6, back * rng:NextNumber(10, 18))
@@ -417,6 +506,7 @@ local function doBlock(blocker, p, v, t)
 	end
 	-- a block isn't one of the three touches, and the blocker may play the ball next
 	ball.lastTeam, ball.lastSlot, ball.touches, ball.lastKind = blocker.team, nil, 0, "block"
+	ball.blocker = blocker
 	launch(np, nv, t, true)
 	remote:FireAllClients("fx", "block", np, {})
 	sendState()
@@ -473,16 +563,19 @@ local function onLand(t)
 			if ball.lastTeam == winner then
 				if ball.lastKind == "serve" then
 					reason = "ACE"
+					charge(ball.lastSlot, 25)
 					if ball.lastSlot and ball.lastSlot.stats then
 						ball.lastSlot.stats.aces += 1
 					end
 				elseif ball.lastKind == "spike" then
 					reason = "KILL"
+					charge(ball.lastSlot, 20)
 					if ball.lastSlot and ball.lastSlot.stats then
 						ball.lastSlot.stats.kills += 1
 					end
 				elseif ball.lastKind == "block" then
 					reason = "BLOCK"
+					charge(ball.blocker, 15)
 				elseif ball.lastKind == "tip" then
 					reason = "TIP"
 				end
@@ -548,6 +641,13 @@ local function doServe(slot, aim, power, airborne, rootPos)
 		target += jitter(0.8 + math.max(power - 0.9, 0) * 10)
 	end
 	local tau = 1.7 + ((airborne and 0.8 or 0.95) - 1.7) * power
+	local ace = boosted(slot, "ACE SERVE")
+	if ace then
+		spendBoost(slot)
+		target = clampToOpp(team, aim, 0)
+		tau = math.max(tau - 0.25, 0.7)
+		power = math.max(power, 0.5)
+	end
 	local v
 	if power < 0.15 then
 		-- under-hit: straight into the net
@@ -560,6 +660,7 @@ local function doServe(slot, aim, power, airborne, rootPos)
 	ball.holder = nil
 	phase = "rally"
 	launch(p, v, now())
+	ball.power = ace
 	act(slot, airborne and "jumpserve" or "serve")
 	remote:FireAllClients("fx", "hit", p, { kind = "serve", q = 1, user = slot.player and slot.player.UserId or 0, team = team, index = slot.index })
 	sendState()

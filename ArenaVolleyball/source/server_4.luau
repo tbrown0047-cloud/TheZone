@@ -1,6 +1,9 @@
 
 ---------------------------------------------------------------- match flow
 
+local matchContext = nil -- how the current match was started (quick play, career or online)
+local pausedBy = ""
+
 function currentServer()
 	local team = teams[servingTeam]
 	return team.slots[math.max(team.serveIndex, 1)]
@@ -25,6 +28,9 @@ function sendState(plr)
 				a = st.aces or 0,
 				b = st.blocks or 0,
 				d = st.digs or 0,
+				meter = math.floor(s.meter or 0),
+				ability = abilityOf(s),
+				boost = (s.boost and s.boost.untilT > now()) and s.boost.kind or nil,
 			})
 		end
 	end
@@ -47,6 +53,10 @@ function sendState(plr)
 		points = pointsToWin,
 		setsToWin = setsToWin,
 		teamSize = TEAM_SIZE,
+		paused = paused,
+		pausedAt = pausedAt,
+		pausedBy = pausedBy,
+		mode = matchContext and matchContext.mode or "quick",
 	}
 	if plr then
 		remote:FireClient(plr, "state", data)
@@ -68,6 +78,9 @@ function setupServe()
 	serveDeadline = now() + Config.SERVE_TIME
 	for t = 1, 2 do
 		teams[t].brain = {}
+		for _, s in teams[t].slots do
+			dressBot(s) -- the libero comes on or off as players rotate
+		end
 	end
 	-- an AI server who has already walked to the line isn't teleported
 	if not (srv.isAI and srv.root and flatDist(srv.root.Position, serveSpot(srv)) < 4) then
@@ -107,6 +120,19 @@ end
 
 -- Ends the match: people go back to the menu, AI bodies are removed, the court goes quiet
 function stopMatch()
+	local finished = phase == "matchover"
+	local winner = teams[1].sets > teams[2].sets and 1 or 2
+	local results = {}
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.player then
+				table.insert(results, { player = s.player, team = t, stats = s.stats or {}, won = t == winner })
+			end
+		end
+	end
+	local context = matchContext
+	matchContext = nil
+	paused = false
 	matchActive = false
 	phase = "idle"
 	ball.live = false
@@ -126,10 +152,53 @@ function stopMatch()
 				s.isAI = true
 				moveOffCourt(plr)
 			end
+			s.override, s.meter, s.boost = nil, 0, nil
 			clearBody(s)
 		end
 	end
 	sendBall()
+	sendState()
+	if finished and context and onMatchFinished then
+		task.spawn(onMatchFinished, context, results, winner)
+	end
+end
+
+-- The pause menu stops everything; on resume the ball and every timer pick up where they were
+local function setPaused(on, who)
+	if on == paused or not matchActive then
+		return
+	end
+	local t = now()
+	if on then
+		paused, pausedAt, pausedBy = true, t, who or ""
+		for team = 1, 2 do
+			for _, s in teams[team].slots do
+				if s.isAI and s.humanoid then
+					s.humanoid:Move(Vector3.zero)
+					s.ai.vel = Vector3.zero
+				end
+			end
+		end
+	else
+		local gap = t - pausedAt
+		paused = false
+		ball.t0 += gap
+		serveAt += gap
+		serveDeadline += gap
+		phaseUntil += gap
+		for team = 1, 2 do
+			teams[team].brain = {}
+			if teams[team].call then
+				teams[team].call.untilT += gap
+			end
+			for _, s in teams[team].slots do
+				if s.boost then
+					s.boost.untilT += gap
+				end
+			end
+		end
+		sendBall()
+	end
 	sendState()
 end
 
@@ -162,6 +231,9 @@ local function updateMatch(t)
 					act(srv, "serveprep")
 				end
 				if t >= serveAt then
+					if (srv.meter or 0) >= 100 and not srv.boost then
+						activateAbility(srv)
+					end
 					if srv.ai.jumpServe and not srv.ai.serveJumped and srv.humanoid then
 						-- jump serve: leave the ground, hit it a moment later
 						srv.ai.serveJumped = true
@@ -401,6 +473,12 @@ local function planRally(team, t, brain)
 			end
 		end
 		local who, kind, tc, cp = brain.who, brain.kind, brain.tc, brain.cp
+		if who and who.isAI and (who.meter or 0) >= 100 and not who.boost then
+			local role = roleOf(who)
+			if (kind == "spike" and (role == "OH" or role == "OPP")) or (kind == "set" and role == "S") or (kind == "bump" and role == "L") then
+				activateAbility(who)
+			end
+		end
 		if who and who.isAI and who.root and who.humanoid then
 			local stand = Vector3.new(cp.X, GY, cp.Z)
 			if kind == "spike" then
@@ -493,6 +571,9 @@ local function planRally(team, t, brain)
 				for i = 1, count do
 					local blk = front[i]
 					blockers[blk] = true
+					if (blk.meter or 0) >= 100 and not blk.boost and roleOf(blk) == "MB" then
+						activateAbility(blk)
+					end
 					local bx = cpo.X + (count == 2 and (i == 1 and -1.6 or 1.6) or 0)
 					orders[blk] = { pos = Vector3.new(bx, GY, C.Z + s * 1.6), run = true }
 					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - bx) < 3.5 then
@@ -568,23 +649,20 @@ end
 
 ---------------------------------------------------------------- starting and joining from the menu
 
-local function beginMatch(plr, data)
-	local count = #Teams.list
-	local home = math.clamp(math.floor(tonumber(data.home) or 1), 1, count)
-	local away = math.clamp(math.floor(tonumber(data.away) or 2), 1, count)
-	if away == home then
-		away = home % count + 1
-	end
-	local lineup = Teams.validLineup(data.lineup) and data.lineup or Teams.defaultLineup()
-	local points = tonumber(data.points)
-	pointsToWin = (points == 15 or points == 21 or points == 25) and points or Config.POINTS_TO_WIN
-	local sets = tonumber(data.sets)
-	setsToWin = (sets == 1 or sets == 2 or sets == 3) and sets or Config.SETS_TO_WIN
-
-	configureTeams(home, away, lineup, nil)
+-- spec: { home, away, lineup, points, sets, mode, players = { { player, team, slot, override } } }
+local function beginMatch(spec)
+	configureTeams(spec.home, spec.away, spec.lineup, nil)
+	pointsToWin = spec.points or Config.POINTS_TO_WIN
+	setsToWin = spec.sets or Config.SETS_TO_WIN
+	matchContext = spec
 	matchActive = true
 	phase = "setup"
-	addPlayer(plr, 1, math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE))
+	for _, entry in spec.players do
+		local slot = addPlayer(entry.player, entry.team, entry.slot)
+		if slot then
+			slot.override = entry.override
+		end
+	end
 
 	-- AI bodies for everyone else, built together
 	local building = 0
@@ -610,6 +688,25 @@ local function beginMatch(plr, data)
 	end
 end
 
+local function quickPlay(plr, data)
+	local count = #Teams.list
+	local home = math.clamp(math.floor(tonumber(data.home) or 1), 1, count)
+	local away = math.clamp(math.floor(tonumber(data.away) or 2), 1, count)
+	if away == home then
+		away = home % count + 1
+	end
+	local points, sets = tonumber(data.points), tonumber(data.sets)
+	beginMatch({
+		mode = "quick",
+		home = home,
+		away = away,
+		lineup = Teams.validLineup(data.lineup) and data.lineup or Teams.defaultLineup(),
+		points = (points == 15 or points == 21 or points == 25) and points or nil,
+		sets = (sets == 1 or sets == 2 or sets == 3) and sets or nil,
+		players = { { player = plr, team = 1, slot = math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE) } },
+	})
+end
+
 ---------------------------------------------------------------- input from players
 
 remote.OnServerEvent:Connect(function(plr, action, data)
@@ -622,11 +719,14 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		return
 	end
 	if action == "start" then
+		if data.mode == "career" or data.mode == "online" then
+			return -- handled with the career and online code
+		end
 		if not slotOfPlayer[plr] then
 			if matchActive then
 				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot))
 			else
-				beginMatch(plr, data)
+				quickPlay(plr, data)
 			end
 		end
 		return
@@ -641,6 +741,12 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 	local slot = slotOfPlayer[plr]
 	if not matchActive or not slot or not slot.root or not slot.humanoid then
 		return
+	end
+	if action == "pause" then
+		setPaused(data.on == true, plr.DisplayName)
+		return
+	elseif paused then
+		return -- nothing moves while the match is paused
 	end
 	local t = now()
 	local rootPos = slot.root.Position
@@ -696,9 +802,31 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		if t - (slot.lastDive or 0) > 1 then
 			slot.lastDive = t
 			slot.diveUntil = t + 0.7
-			-- if your screen played your dive emote, others see that instead of the built-in dive
-			act(slot, data.custom == true and "divecustom" or "dive")
+			act(slot, "dive")
 		end
+	elseif action == "ability" then
+		activateAbility(slot)
+	elseif action == "call" then
+		-- calling for a quick set: the next set comes to you, fast and low
+		teams[slot.team].call = { slot = slot, untilT = t + 4 }
+		remote:FireClient(plr, "called")
+	elseif action == "sub" then
+		local team = teams[slot.team]
+		local outIndex, inIndex = tonumber(data.out), tonumber(data.into)
+		local at = outIndex and table.find(team.lineup, outIndex)
+		local squad = Teams.squad(team.defId)
+		if not at or not inIndex or not squad[inIndex] or table.find(team.lineup, inIndex) then
+			return
+		end
+		local target = team.slots[at]
+		if not target or not target.isAI then
+			return -- people can't be substituted
+		end
+		team.lineup[at] = inIndex
+		clearBody(target)
+		task.spawn(makeBot, target)
+		banner("SUBSTITUTION", "ON " .. squad[inIndex].last .. "   ·   OFF " .. squad[outIndex].last, slot.team)
+		sendState()
 	end
 end)
 
@@ -738,7 +866,7 @@ end)
 ball.mode = "hidden"
 local lastError = 0
 RunService.Heartbeat:Connect(function(dt)
-	if not matchActive then
+	if not matchActive or paused then
 		return
 	end
 	local ok, err = pcall(function()

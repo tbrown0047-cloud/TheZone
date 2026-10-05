@@ -12,14 +12,29 @@ return {
 	-- Real dimensions in studs
 	COURT_LENGTH = 64, -- 18 m
 	COURT_WIDTH = 32, -- 9 m
-	NET_HEIGHT = 8.7, -- 2.43 m (men's net). Use 7.9 for the women's 2.24 m net.
+	NET_HEIGHT = 10, -- taller than a real net (8.7) so it looks right next to Roblox players
 
 	GRAVITY = 35, -- 9.81 m/s²
 	BALL_RADIUS = 0.42, -- a real ball is 0.38; a touch bigger so it's easy to follow
 	REACH = 6.5, -- how far from your body you can play the ball
 	SERVE_TIME = 8, -- seconds to serve (8 s, like the real rule) before one is made for you
 
-	-- Your dive can play a marketplace emote you own instead of the built-in dive.
-	-- Paste the emote's ID (the number in its catalog link); 0 uses the built-in dive.
-	DIVE_EMOTE_ID = 87869019490136,
+	-- Your own animations: paste an animation ID for any move (0 uses the built-in pose).
+	-- Upload them to the same account or group that owns the game, or Roblox won't play them.
+	ANIMATIONS = {
+		serve = 0,
+		jumpserve = 0,
+		bump = 0,
+		set = 0,
+		spike = 0,
+		tip = 0,
+		block = 0,
+		dive = 0,
+	},
+
+	-- Sound IDs (0 = silent): ball contact, spikes, the whistle after a point, crowd cheer
+	SOUNDS = { hit = 0, spike = 0, whistle = 0, crowd = 0 },
+
+	ABILITY_CHARGE = 1, -- how fast ability meters fill (2 = twice as fast)
+	SEASON_ROUNDS = 11, -- career league: every club plays each other once
 }

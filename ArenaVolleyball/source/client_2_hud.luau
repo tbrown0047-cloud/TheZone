@@ -252,10 +252,52 @@ end
 HUD.hitButton = touchButton("HIT", UDim2.new(1, -150, 1, -210), 76)
 HUD.setButton = touchButton("SET", UDim2.new(1, -238, 1, -138), 58)
 HUD.diveButton = touchButton("DIVE", UDim2.new(1, -76, 1, -286), 58)
+HUD.abilityButton = touchButton("POWER", UDim2.new(1, -66, 1, -176), 52)
 if HUD.touchMode then
 	HUD.prompts.Visible = false
 	HUD.me.holder.Visible = false
 	HUD.them.holder.Visible = false
+end
+
+-- ability meter, above your player panel
+do
+	local pill = frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 70, 1, -72), Size = UDim2.fromOffset(244, 22), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15 }, hud)
+	round(pill, 4)
+	HUD.abilityStroke = outline(pill, COL.gold, 2, 1)
+	HUD.abilityFill = frame({ Size = UDim2.fromScale(0, 1), BackgroundColor3 = COL.violet }, pill)
+	round(HUD.abilityFill, 4)
+	HUD.abilityName = text({ Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -50, 1, 0), FontFace = FONT.title, TextSize = 13, TextXAlignment = LEFT, TextStrokeTransparency = 0.6 }, pill)
+	local chip = frame({ AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0), Size = UDim2.fromOffset(30, 16), BackgroundColor3 = COL.gold, Visible = false }, pill)
+	round(chip, 8)
+	HUD.abilityKey = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 11, TextColor3 = COL.ink, Text = "R" }, chip)
+	HUD.abilityChip = chip
+	HUD.abilityPill = pill
+end
+
+-- crosshair for the shoulder camera
+HUD.crosshair = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(8, 8), BackgroundColor3 = COL.text, BackgroundTransparency = 0.15, Visible = false }, hud)
+round(HUD.crosshair, 4)
+outline(HUD.crosshair, COL.ink, 1, 0.3)
+
+-- "POWER SPIKE · #7 SILVA" when anyone uses an ability
+do
+	local notice = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 84), Size = UDim2.fromOffset(380, 34), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
+	HUD.noticeGradient = gradient(notice, COL.violet, COL.bg1, 0)
+	HUD.noticeText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 18 }, notice)
+	HUD.notice = notice
+end
+local noticeToken = 0
+function HUD.showNotice(message, color)
+	noticeToken += 1
+	local token = noticeToken
+	HUD.noticeText.Text = message
+	HUD.noticeGradient.Color = ColorSequence.new(color or COL.violet, COL.bg1)
+	HUD.notice.Visible = true
+	task.delay(2, function()
+		if noticeToken == token then
+			HUD.notice.Visible = false
+		end
+	end)
 end
 
 ---------------------------------------------------------------- refreshing the HUD
@@ -369,4 +411,18 @@ function HUD.update(t, ballPos)
 	end
 	HUD.cue.Visible = state.phase == "rally" and t < HUD.cueUntil
 	HUD.prompts.Visible = settings.hints and not HUD.touchMode
+	HUD.crosshair.Visible = settings.camera == "player" and me ~= nil and not state.paused
+	-- ability meter
+	HUD.abilityPill.Visible = me ~= nil
+	if me then
+		local meter = math.clamp((me.meter or 0) / 100, 0, 1)
+		local ready = meter >= 1
+		HUD.abilityFill.Size = UDim2.fromScale(meter, 1)
+		HUD.abilityFill.BackgroundColor3 = ready and COL.gold or COL.violet
+		HUD.abilityName.Text = me.boost and (me.boost .. "  ACTIVE") or (me.ability or "ABILITY")
+		HUD.abilityName.TextColor3 = ready and COL.ink or COL.text
+		HUD.abilityChip.Visible = ready and not me.boost
+		HUD.abilityKey.Text = lastInput == "pad" and "Y" or (HUD.touchMode and "TAP" or "R")
+		HUD.abilityStroke.Transparency = (ready or me.boost) and (0.3 + 0.3 * math.sin(t * 8)) or 1
+	end
 end

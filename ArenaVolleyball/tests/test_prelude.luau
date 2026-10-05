@@ -48,7 +48,7 @@ Random = {
 }
 
 Config = { POINTS_TO_WIN = 25, WIN_BY = 2, SETS_TO_WIN = 1, SERVE_TIME = 8 }
-TEAM_SIZE, HALF_L, HALF_W, NET_H, G, R, REACH = 6, 32, 16, 8.7, 35, 0.42, 6.5
+TEAM_SIZE, HALF_L, HALF_W, NET_H, G, R, REACH = 6, 32, 16, 10, 35, 0.42, 6.5
 ATTACK_H = NET_H + 2
 rng = Random.new()
 CLOCK = 0

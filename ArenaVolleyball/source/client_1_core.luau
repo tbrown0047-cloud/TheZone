@@ -271,6 +271,20 @@ end
 Ball.shadow = worldPart({ Name = "BallShadow", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.04, 2, 2), Color = Color3.new(0, 0, 0), Transparency = 0.6 })
 Ball.marker = worldPart({ Name = "LandingMarker", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.03, 3.4, 3.4), Color = Color3.new(1, 1, 1), Material = Enum.Material.Neon, Transparency = 1 })
 Ball.aim = worldPart({ Name = "AimMarker", Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.03, 1.6, 1.6), Material = Enum.Material.Neon, Transparency = 1 })
+-- a streak behind fast balls (gold for power shots)
+do
+	local top = make("Attachment", { Position = Vector3.new(0, R * 0.8, 0) }, Ball.part)
+	local bottom = make("Attachment", { Position = Vector3.new(0, -R * 0.8, 0) }, Ball.part)
+	Ball.trail = make("Trail", {
+		Attachment0 = top,
+		Attachment1 = bottom,
+		Lifetime = 0.22,
+		LightEmission = 0.6,
+		Transparency = NumberSequence.new(0.2, 1),
+		Color = ColorSequence.new(Color3.new(1, 1, 1)),
+		Enabled = false,
+	}, Ball.part)
+end
 Ball.glow = make("Highlight", {
 	Adornee = Ball.part,
 	FillTransparency = 1,
@@ -376,6 +390,9 @@ local function airborne(hum)
 end
 
 local function ballAt(t)
+	if state.paused and state.pausedAt then
+		t = math.min(t, state.pausedAt) -- frozen while the match is paused
+	end
 	if ballState.mode == "fly" then
 		local dt = math.max(t - ballState.t0, 0)
 		local p = ballState.p0 + ballState.v0 * dt + Vector3.new(0, -0.5 * G * dt * dt, 0)

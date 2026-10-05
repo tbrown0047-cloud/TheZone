@@ -163,11 +163,8 @@ local function dive()
 	Stamina.value -= 20
 	Controls.lastDive = os.clock()
 	Controls.diveUntil = os.clock() + 0.7
-	local custom = Anim.tryDiveEmote()
-	if not custom then
-		Anim.play(hum.Parent, "dive")
-	end
-	remote:FireServer("dive", { custom = custom })
+	Anim.play(hum.Parent, "dive")
+	remote:FireServer("dive", {})
 	hrp.AssemblyLinearVelocity = dir.Unit * 42 + Vector3.new(0, 14, 0)
 	local speed = hum.WalkSpeed
 	task.delay(0.35, function()
@@ -191,6 +188,12 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		if showPause then
 			showPause()
 		end
+	elseif state.paused then
+		return -- nothing to do while the match is paused
+	elseif key == Enum.KeyCode.R or key == Enum.KeyCode.ButtonY then
+		remote:FireServer("ability", {})
+	elseif key == Enum.KeyCode.F or key == Enum.KeyCode.DPadUp then
+		remote:FireServer("call", {})
 	elseif key == Enum.KeyCode.V then
 		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
@@ -213,24 +216,45 @@ HUD.hitButton.MouseButton1Up:Connect(release)
 HUD.setButton.MouseButton1Down:Connect(setBall)
 HUD.diveButton.MouseButton1Down:Connect(dive)
 
----------------------------------------------------------------- broadcast camera: behind your team, following the play
+---------------------------------------------------------------- cameras
+-- BROADCAST: a low chase camera behind your team that follows you and the ball.
+-- SHOULDER (V): over your right shoulder, third-person-shooter style; the mouse turns it.
 
-local Cam = { focus = nil, zoom = 1 }
+local Cam = { focus = nil, zoom = 1, yaw = 0, pitch = -0.22, ready = false, stick = Vector2.zero, shakeUntil = 0, shakePower = 0 }
+
+function Cam.shake(power, seconds)
+	Cam.shakePower = math.max(Cam.shakePower, power)
+	Cam.shakeUntil = math.max(Cam.shakeUntil, os.clock() + seconds)
+end
+
+local function shoulderActive()
+	return settings.camera == "player" and not inMenu and myTeam() ~= 0 and not state.paused
+end
 
 UserInputService.InputChanged:Connect(function(input, processed)
-	if not processed and input.UserInputType == Enum.UserInputType.MouseWheel and settings.camera == "broadcast" and not inMenu then
-		Cam.zoom = math.clamp(Cam.zoom - input.Position.Z * 0.06, 0.6, 1.25)
+	if inMenu then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseWheel and not processed then
+		Cam.zoom = math.clamp(Cam.zoom - input.Position.Z * 0.06, 0.6, 1.4)
+	elseif input.UserInputType == Enum.UserInputType.MouseMovement and shoulderActive() then
+		Cam.yaw -= input.Delta.X * 0.0045
+		Cam.pitch = math.clamp(Cam.pitch - input.Delta.Y * 0.0035, -1.1, 0.45)
+	elseif input.KeyCode == Enum.KeyCode.Thumbstick2 then
+		Cam.stick = Vector2.new(input.Position.X, input.Position.Y)
 	end
 end)
 
 function Cam.update(dt, ballPos)
 	if inMenu then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 		return
 	end
 	local cam = workspace.CurrentCamera
 	local team = myTeam()
 	local hum, hrp = character()
-	if settings.camera ~= "broadcast" or team == 0 or not hrp then
+	if team == 0 or not hrp then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 		if cam.CameraType ~= Enum.CameraType.Custom then
 			cam.CameraType = Enum.CameraType.Custom
 			cam.FieldOfView = 70
@@ -241,12 +265,49 @@ function Cam.update(dt, ballPos)
 		return
 	end
 	local s = team == 1 and 1 or -1
-	local target = Vector3.new(C.X + (ballPos.X - C.X) * 0.35 + (hrp.Position.X - C.X) * 0.3, GY, C.Z)
-	Cam.focus = Cam.focus and Cam.focus:Lerp(target, math.min(1, dt * 2.5)) or target
-	local eye = Vector3.new(C.X + (Cam.focus.X - C.X) * 0.8, GY + 28 * Cam.zoom, C.Z + s * (HALF_L + 34) * Cam.zoom)
+	local shake = Vector3.zero
+	if os.clock() < Cam.shakeUntil then
+		local p = Cam.shakePower * (Cam.shakeUntil - os.clock()) / 0.3
+		shake = Vector3.new(math.random() - 0.5, math.random() - 0.5, math.random() - 0.5) * p
+	else
+		Cam.shakePower = 0
+	end
 	cam.CameraType = Enum.CameraType.Scriptable
-	cam.FieldOfView = 52
-	cam.CFrame = CFrame.lookAt(eye, Vector3.new(Cam.focus.X, GY + 2, C.Z - s * 4))
+
+	if settings.camera == "player" then
+		if not Cam.ready then
+			Cam.yaw = team == 1 and 0 or math.pi -- start facing the net
+			Cam.pitch = -0.22
+			Cam.ready = true
+		end
+		UserInputService.MouseBehavior = shoulderActive() and Enum.MouseBehavior.LockCenter or Enum.MouseBehavior.Default
+		if Cam.stick.Magnitude > 0.15 then
+			Cam.yaw -= Cam.stick.X * dt * 3
+			Cam.pitch = math.clamp(Cam.pitch + Cam.stick.Y * dt * 2, -1.1, 0.45)
+		end
+		local rot = CFrame.Angles(0, Cam.yaw, 0) * CFrame.Angles(Cam.pitch, 0, 0)
+		local pivot = hrp.Position + Vector3.new(0, 2.4, 0)
+		local eye = pivot + rot:VectorToWorldSpace(Vector3.new(2.6, 0.8, 9 * Cam.zoom))
+		eye = Vector3.new(eye.X, math.max(eye.Y, GY + 1.2), eye.Z)
+		cam.FieldOfView = 70
+		cam.CFrame = CFrame.new(eye + shake) * rot
+		return
+	end
+
+	Cam.ready = false
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	-- follow a point between you and the ball, kept on the court
+	local ballOnOurSide = (ballPos.Z - C.Z) * s > 0
+	local blend = ballOnOurSide and 0.45 or 0.3
+	local target = hrp.Position:Lerp(ballPos, blend)
+	local depth = math.clamp((target.Z - C.Z) * s, -4, HALF_L + 2)
+	target = Vector3.new(math.clamp(target.X, C.X - HALF_W - 4, C.X + HALF_W + 4), GY, C.Z + s * depth)
+	Cam.focus = Cam.focus and Cam.focus:Lerp(target, math.min(1, dt * 3)) or target
+	local focusDepth = (Cam.focus.Z - C.Z) * s
+	local eye = Vector3.new(C.X + (Cam.focus.X - C.X) * 0.75, GY + 15 * Cam.zoom, C.Z + s * (focusDepth + 26 * Cam.zoom))
+	local look = Vector3.new(Cam.focus.X, GY + 3, C.Z + s * (focusDepth - 14))
+	cam.FieldOfView = 62
+	cam.CFrame = CFrame.lookAt(eye + shake, look)
 end
 
 local function updatePrompts()
@@ -263,12 +324,14 @@ local function updatePrompts()
 			{ pad and "R-STICK" or "MOUSE", "Aim" },
 		})
 	elseif state.phase == "rally" then
+		local me = myEntry()
+		local ready = me and (me.meter or 0) >= 100
 		HUD.setPrompts({
 			{ pad and "R2" or "CLICK", "Pass · spike in the air" },
 			{ pad and "X" or "E", "Set · tip in the air" },
 			{ pad and "A" or "SPACE", "Jump · block at the net" },
 			{ pad and "B" or "Q", "Dive" },
-			{ pad and "START" or "M", "Pause" },
+			ready and { pad and "Y" or "R", (me.ability or "Ability") .. " ready!" } or { pad and "UP" or "F", "Call for a quick set" },
 		})
 	else
 		HUD.setPrompts({ { pad and "START" or "M", "Pause" }, { "V", "Camera" } })

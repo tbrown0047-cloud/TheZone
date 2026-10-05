@@ -17,6 +17,9 @@ local function giveBodies()
 					root.vy = 0
 				end,
 				Destroy = function() end,
+				FindFirstChildOfClass = function() return nil end,
+				FindFirstChild = function() return nil end,
+				GetDescendants = function() return {} end,
 			}
 			sl.ai = { vel = Vector3.zero, pace = 1, drift = 0 }
 		end

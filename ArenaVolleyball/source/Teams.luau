@@ -66,6 +66,9 @@ local WEIGHTS = {
 	L = { SRV = 0.2, ATK = 0, BLK = 0, REC = 4, SET = 1.5, PHY = 1 },
 }
 
+Teams.TEMPLATE = TEMPLATE
+Teams.ROLE_ORDER = { "S", "OH", "MB", "OPP", "L" }
+
 -- Small exact random generator (same results everywhere)
 local function roller(seed)
 	local state = seed % 2147483646 + 1

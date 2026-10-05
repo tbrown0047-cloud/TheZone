@@ -26,10 +26,33 @@ local function configureTeams(homeId, awayId, homeLineup, awayLineup)
 end
 configureTeams(1, 2)
 
--- The squad player a slot stands for
+-- The bench libero, if the club has one
+local function liberoIndex(team)
+	for i, p in Teams.squad(team.defId) do
+		if p.role == "L" and not table.find(team.lineup, i) then
+			return i
+		end
+	end
+	return nil
+end
+
+-- The squad player a slot stands for: a career player in your own slot, and the libero
+-- in place of a middle blocker while he's in the back row (but not when he serves)
 local function playerOf(slot)
+	if slot.override then
+		return slot.override
+	end
 	local team = teams[slot.team]
-	return Teams.squad(team.defId)[team.lineup[slot.index] or slot.index]
+	local squad = Teams.squad(team.defId)
+	local p = squad[team.lineup[slot.index] or slot.index]
+	if slot.isAI and TEAM_SIZE == 6 and p and p.role == "MB" then
+		local pos = (slot.index - team.serveIndex) % 6 + 1
+		local libero = (pos == 5 or pos == 6) and liberoIndex(team)
+		if libero then
+			return squad[libero]
+		end
+	end
+	return p
 end
 
 local function roleOf(slot)
@@ -152,6 +175,41 @@ local function addNumber(model, number, color)
 	end
 end
 
+-- Puts an AI body in the right shirt: the libero wears a contrasting one
+local function dressBot(slot)
+	local model = slot.model
+	if not slot.isAI or not model then
+		return
+	end
+	local def = teams[slot.team].def
+	local p = playerOf(slot)
+	local libero = p and p.role == "L"
+	local shirtColor = libero and def.secondary or def.primary
+	local colors = model:FindFirstChildOfClass("BodyColors")
+	if colors then
+		colors.TorsoColor3 = shirtColor
+	end
+	for _, name in { "UpperTorso", "LowerTorso", "Torso" } do
+		local partInstance = model:FindFirstChild(name)
+		if partInstance then
+			partInstance.Color = shirtColor
+		end
+	end
+	local light = (shirtColor.R + shirtColor.G + shirtColor.B) > 1.8
+	for _, d in model:GetDescendants() do
+		if d:IsA("SurfaceGui") and d.Name == "ShirtNumber" then
+			local label = d:FindFirstChildOfClass("TextLabel")
+			if label and p then
+				label.Text = tostring(p.number)
+				label.TextColor3 = light and Color3.fromRGB(20, 20, 30) or Color3.new(1, 1, 1)
+			end
+		end
+	end
+	if p then
+		model.Name = p.last
+	end
+end
+
 -- Used only if Roblox can't build a normal body
 local function simpleBody(slot)
 	local model = Instance.new("Model")
@@ -253,6 +311,7 @@ local function makeBot(slot)
 	align.Parent = hrp
 
 	slot.model, slot.humanoid, slot.root, slot.align = model, hum, hrp, align
+	dressBot(slot)
 	-- everyone moves a little differently
 	slot.ai = { vel = Vector3.zero, pace = rng:NextNumber(0.88, 1.12), drift = rng:NextNumber(0, 10) }
 	model.Parent = courtFolder
@@ -405,6 +464,7 @@ local function removePlayer(plr)
 	end
 	slotOfPlayer[plr] = nil
 	slot.player = nil
+	slot.override = nil
 	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
 	slot.isAI = true
 	slot.ai = {}

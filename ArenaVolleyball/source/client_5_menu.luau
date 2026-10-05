@@ -424,7 +424,7 @@ do
 
 	-- CAREER: a player in kit with a ball
 	local career = Menu.tile(home, UDim2.fromOffset(500, 202), UDim2.fromOffset(224, 398), function()
-		Menu.toast("Career mode is coming soon")
+		Menu.openCareer()
 	end)
 	career.BackgroundColor3 = Color3.new(1, 1, 1)
 	career.BackgroundTransparency = 0
@@ -432,11 +432,11 @@ do
 	Menu.careerArt = Menu.avatar(career, { Position = UDim2.fromOffset(0, 62), Size = UDim2.new(1, 0, 1, -62) }, -0.25)
 	text({ Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 46), Text = "CAREER", FontFace = FONT.num, TextSize = 46, TextColor3 = COL.teal, TextStrokeTransparency = 0.6 }, career)
 	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 14), Text = "M  O  D  E", FontFace = FONT.title, TextSize = 12 }, career)
-	Menu.chip(career, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
+	Menu.chip(career, "NEW", UDim2.new(0, 16, 1, -40))
 
 	-- ONLINE: seasons
 	local online = Menu.tile(home, UDim2.fromOffset(732, 202), UDim2.fromOffset(480, 262), function()
-		Menu.toast("Online seasons are coming soon")
+		Menu.openOnline()
 	end)
 	Menu.title(online, "PLAY ONLINE\nSEASONS", 40)
 	text({
@@ -449,7 +449,7 @@ do
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 	}, online)
-	Menu.chip(online, "COMING SOON", UDim2.fromOffset(16, 218), COL.text)
+	Menu.chip(online, "NEW", UDim2.fromOffset(16, 218))
 	Menu.onlineArt = Menu.avatar(online, { Position = UDim2.fromOffset(250, 4), Size = UDim2.fromOffset(226, 256) }, 0.5)
 
 	-- LIVE CONTENT: tips and news
@@ -546,11 +546,11 @@ do
 	Menu.playArt = Menu.avatar(qp, { Position = UDim2.fromOffset(200, 60), Size = UDim2.fromOffset(270, 336) }, -0.3)
 	Menu.chip(qp, "PLAY NOW", UDim2.new(0, 16, 1, -40))
 	local career = Menu.tile(play, UDim2.fromOffset(746, 202), UDim2.fromOffset(466, 195), function()
-		Menu.toast("Career mode is coming soon")
+		Menu.openCareer()
 	end)
 	Menu.title(career, "CAREER", 34)
 	text({ Position = UDim2.fromOffset(16, 56), Size = UDim2.fromOffset(430, 50), Text = "Choose your club and position and work your way up from rookie to pro.", FontFace = FONT.head, TextSize = 16, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, career)
-	Menu.chip(career, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
+	Menu.chip(career, "PLAY NOW", UDim2.new(0, 16, 1, -40))
 	local practice = Menu.tile(play, UDim2.fromOffset(746, 405), UDim2.fromOffset(466, 195), function()
 		Menu.toast("Practice arena is coming soon")
 	end)
@@ -569,12 +569,21 @@ do
 		local page = Menu.screen(info[1])
 		Menu.frontTabs(page, i + 2)
 		for k = 0, 1 do
+			local live = info[1] == "online" and k == 0
 			local t = Menu.tile(page, UDim2.fromOffset(268 + k * 476, 202), UDim2.fromOffset(468, 398), function()
-				Menu.toast("Coming soon")
+				if live then
+					Menu.openOnline()
+				else
+					Menu.toast("Coming soon")
+				end
 			end)
 			Menu.title(t, info[2 + k * 2], 36)
 			text({ Position = UDim2.fromOffset(16, 64), Size = UDim2.fromOffset(430, 60), Text = info[3 + k * 2], FontFace = FONT.head, TextSize = 17, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, t)
-			Menu.chip(t, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
+			if live then
+				Menu.chip(t, "PLAY NOW", UDim2.new(0, 16, 1, -40))
+			else
+				Menu.chip(t, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
+			end
 		end
 		Menu.hints(page, { { "CLICK", "Select" } })
 	end

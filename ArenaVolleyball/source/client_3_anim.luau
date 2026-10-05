@@ -172,31 +172,55 @@ local function addMove(out, move, tau)
 	return true
 end
 
-function Anim.play(model, kind)
-	local move = POSES[kind]
-	if model and move then
-		Anim.active[model] = { move = move, t0 = os.clock() }
+-- Your own animation for a move (Config.ANIMATIONS), loaded once per character
+Anim.tracks = setmetatable({}, { __mode = "k" })
+local function customTrack(model, kind)
+	local id = Config.ANIMATIONS and tonumber(Config.ANIMATIONS[kind])
+	if not id or id <= 0 then
+		return nil
 	end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	local animator = hum and hum:FindFirstChildOfClass("Animator")
+	if not animator then
+		return nil
+	end
+	local cache = Anim.tracks[model]
+	if not cache then
+		cache = {}
+		Anim.tracks[model] = cache
+	end
+	if cache[kind] == nil then
+		local anim = Instance.new("Animation")
+		anim.AnimationId = "rbxassetid://" .. id
+		local ok, track = pcall(animator.LoadAnimation, animator, anim)
+		if ok and track then
+			track.Priority = Enum.AnimationPriority.Action
+			cache[kind] = track
+		else
+			cache[kind] = false
+		end
+	end
+	return cache[kind] or nil
 end
 
--- Your dive can use a marketplace emote instead (Config.DIVE_EMOTE_ID); falls back to the hand-made one
-local emoteBroken = false
-function Anim.tryDiveEmote()
-	local id = tonumber(Config.DIVE_EMOTE_ID)
-	local hum = character()
-	if emoteBroken or not id or id <= 0 or not hum then
-		return false
+function Anim.play(model, kind)
+	if not model then
+		return
 	end
-	local ok, played = pcall(function()
-		local success = hum:PlayEmoteAndGetAnimTrackById(id)
-		return success
-	end)
-	if ok and played then
-		return true
+	-- with your own serve animation, the built-in toss isn't needed
+	if kind == "serveprep" and customTrack(model, "serve") then
+		return
 	end
-	emoteBroken = true
-	warn("[Arena Volleyball] Couldn't play dive emote " .. id .. "; using the built-in dive instead.")
-	return false
+	local track = customTrack(model, kind)
+	if track then
+		track:Play(0.1)
+		Anim.active[model] = nil
+		return
+	end
+	local move = POSES[kind]
+	if move then
+		Anim.active[model] = { move = move, t0 = os.clock() }
+	end
 end
 
 -- which held position a character should be in right now
@@ -250,7 +274,16 @@ function Anim.step(dt, ballPos)
 				w.block += (block - w.block) * blend
 				addPose(out, READY, w.ready * (0.85 + 0.15 * math.sin(now * 2.1 + w.seed)))
 				addPose(out, COCK, w.cock)
-				addPose(out, BLOCK, w.block)
+				-- your block animation plays once per jump instead of the held pose
+				local blockTrack = customTrack(model, "block")
+				if blockTrack then
+					if block > 0.5 and not w.blocking then
+						blockTrack:Play(0.1)
+					end
+					w.blocking = block > 0.5
+				else
+					addPose(out, BLOCK, w.block)
+				end
 				for joint, v in out do
 					local motor = motors[joint]
 					if motor then

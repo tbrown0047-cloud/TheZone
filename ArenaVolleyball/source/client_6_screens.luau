@@ -568,41 +568,7 @@ function Menu.startMatch()
 	end)
 end
 
--- pause screen over the match (the match keeps going: it's live)
-do
-	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, HUD.gui)
-	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(380, 300), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
-	outline(panel, COL.line, 1, 0.3)
-	frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.teal, ZIndex = 22 }, panel)
-	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSE", FontFace = FONT.body, TextSize = 34, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
-	text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), Text = "The match carries on while this is open", FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
-	local function option(i, label, onClick)
-		local b = button({ Position = UDim2.fromOffset(40, 90 + (i - 1) * 62), Size = UDim2.fromOffset(300, 50), BackgroundTransparency = 0, BackgroundColor3 = i == 1 and Color3.new(1, 1, 1) or COL.panelHi, ZIndex = 22 }, panel)
-		if i == 1 then
-			gradient(b, COL.violet, Color3.fromRGB(110, 70, 230), 0)
-		end
-		text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = 20, ZIndex = 23 }, b)
-		b.Activated:Connect(onClick)
-	end
-	option(1, "RESUME", function()
-		shade.Visible = false
-	end)
-	option(2, "CAMERA: SWITCH VIEW", function()
-		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
-		shade.Visible = false
-	end)
-	option(3, "QUIT TO MAIN MENU", function()
-		shade.Visible = false
-		remote:FireServer("leave", {})
-		openMenu("home")
-	end)
-	Menu.pause = shade
-	showPause = function()
-		shade.Visible = not shade.Visible
-	end
-end
-
--- your character can't wander off while you're in the menus
+-- your character can't wander off while you're in the menus or the match is paused
 local function setControls(enabled)
 	pcall(function()
 		local module = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
@@ -615,19 +581,143 @@ local function setControls(enabled)
 	end)
 end
 
+-- substitutions: pick a player on the court, then one from the bench
+do
+	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.35, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 30 }, HUD.gui)
+	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(620, 470), BackgroundColor3 = COL.bg2, ZIndex = 31 }, shade)
+	outline(panel, COL.line, 1, 0.3)
+	frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.teal, ZIndex = 32 }, panel)
+	text({ Position = UDim2.fromOffset(24, 12), Size = UDim2.fromOffset(400, 36), Text = "SUBSTITUTIONS", FontFace = FONT.body, TextSize = 30, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 32 }, panel)
+	Menu.subsHint = text({ Position = UDim2.fromOffset(24, 46), Size = UDim2.fromOffset(570, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 32 }, panel)
+	Menu.subsList = frame({ Position = UDim2.fromOffset(24, 76), Size = UDim2.fromOffset(572, 320), BackgroundTransparency = 1, ZIndex = 32 }, panel)
+	local close = button({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -24, 1, -16), Size = UDim2.fromOffset(150, 40), BackgroundTransparency = 0, BackgroundColor3 = COL.panelHi, ZIndex = 32 }, panel)
+	text({ Size = UDim2.fromScale(1, 1), Text = "DONE", FontFace = FONT.title, TextSize = 18, ZIndex = 33 }, close)
+	close.Activated:Connect(function()
+		shade.Visible = false
+	end)
+	Menu.subsShade = shade
+end
+
+function Menu.openSubs()
+	local _, team = myEntry()
+	if team == 0 then
+		return
+	end
+	local list = Menu.subsList
+	list:ClearAllChildren()
+	local teamId, lineup = state.teamIds[team], state.lineups[team] or Teams.defaultLineup()
+	local squad = Teams.squad(teamId)
+	local def = Teams.list[teamId]
+	Menu.subsHint.Text = Menu.subOut and "Now choose who comes on from the bench" or "Choose a player on the court to take off"
+	local function row(y, p, index, x, enabled, tag)
+		local b = button({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(276, 46), BackgroundTransparency = 0.3, BackgroundColor3 = Menu.subOut == index and COL.violet or COL.panelHi, ZIndex = 33 }, list)
+		shirt(b, def.primary, p.number, 34, UDim2.fromOffset(24, 23))
+		text({ Position = UDim2.fromOffset(48, 0), Size = UDim2.fromOffset(150, 46), Text = p.last, FontFace = FONT.title, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = enabled and COL.text or COL.dim }, b)
+		text({ Position = UDim2.fromOffset(190, 0), Size = UDim2.fromOffset(40, 46), Text = tag or p.role, FontFace = FONT.title, TextSize = 13, TextColor3 = COL.cyan }, b)
+		text({ Position = UDim2.fromOffset(230, 0), Size = UDim2.fromOffset(40, 46), Text = tostring(p.ovr), FontFace = FONT.num, TextSize = 20 }, b)
+		b.Activated:Connect(function()
+			if not enabled then
+				return
+			end
+			if Menu.subOut and not table.find(lineup, index) then
+				remote:FireServer("sub", { out = Menu.subOut, into = index })
+				Menu.subOut = nil
+				Menu.subsShade.Visible = false
+			elseif table.find(lineup, index) then
+				Menu.subOut = index
+				Menu.openSubs()
+			end
+		end)
+		zify(b, 34)
+	end
+	text({ Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(276, 20), Text = "ON THE COURT", FontFace = FONT.title, TextSize = 14, TextColor3 = COL.lime, ZIndex = 33 }, list)
+	text({ Position = UDim2.fromOffset(296, 0), Size = UDim2.fromOffset(276, 20), Text = "BENCH", FontFace = FONT.title, TextSize = 14, TextColor3 = COL.lime, ZIndex = 33 }, list)
+	for slot, index in lineup do
+		local e = entryAt(team, slot)
+		local person = e and e.id ~= 0
+		row(24 + (slot - 1) * 50, squad[index], index, 0, not person, person and "YOU" or nil)
+	end
+	local y = 24
+	for index, p in squad do
+		if not table.find(lineup, index) then
+			row(y, p, index, 296, Menu.subOut ~= nil)
+			y += 50
+		end
+	end
+	Menu.subsShade.Visible = true
+end
+
+-- pause screen: stops the match for everyone in it
+do
+	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, HUD.gui)
+	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(380, 370), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
+	outline(panel, COL.line, 1, 0.3)
+	frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.teal, ZIndex = 22 }, panel)
+	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSED", FontFace = FONT.body, TextSize = 34, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
+	Menu.pauseBy = text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
+	local function option(i, label, onClick)
+		local b = button({ Position = UDim2.fromOffset(40, 90 + (i - 1) * 62), Size = UDim2.fromOffset(300, 50), BackgroundTransparency = 0, BackgroundColor3 = i == 1 and Color3.new(1, 1, 1) or COL.panelHi, ZIndex = 22 }, panel)
+		if i == 1 then
+			gradient(b, COL.violet, Color3.fromRGB(110, 70, 230), 0)
+		end
+		text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = 20, ZIndex = 23 }, b)
+		b.Activated:Connect(onClick)
+	end
+	option(1, "RESUME", function()
+		remote:FireServer("pause", { on = false })
+	end)
+	option(2, "CAMERA: SWITCH VIEW", function()
+		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
+		remote:FireServer("pause", { on = false })
+	end)
+	option(3, "SUBSTITUTIONS", function()
+		Menu.subOut = nil
+		Menu.openSubs()
+	end)
+	option(4, "QUIT TO MAIN MENU", function()
+		remote:FireServer("pause", { on = false })
+		remote:FireServer("leave", {})
+		openMenu("home")
+	end)
+	Menu.pause = shade
+	showPause = function()
+		if myTeam() ~= 0 then
+			remote:FireServer("pause", { on = not state.paused })
+		end
+	end
+end
+
+-- shows or hides the pause screen to match the server
+local wasPaused = false
+function Menu.syncPause()
+	local show = state.paused == true and not inMenu and myTeam() ~= 0
+	Menu.pause.Visible = show
+	if not show then
+		Menu.subsShade.Visible = false
+	end
+	Menu.pauseBy.Text = (state.pausedBy and state.pausedBy ~= "") and ("Paused by " .. state.pausedBy) or ""
+	if show ~= wasPaused and not inMenu then
+		task.spawn(setControls, not show)
+	end
+	wasPaused = show
+end
+
 function openMenu(screenName)
 	inMenu = true
+	wasPaused = false
 	task.spawn(setControls, false)
 	Controls.charging = false
 	Controls.pending = nil
 	HUD.power = nil
 	Menu.pause.Visible = false
+	Menu.subsShade.Visible = false
 	HUD.gui.Enabled = false
 	Menu.gui.Enabled = true
 	Menu.loading.Visible = false
 	Menu.waiting = false
 	Menu.stack = {}
 	Menu.show(screenName or "home", false)
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	-- park the camera over the court (the menus cover it)
 	local cam = workspace.CurrentCamera
 	cam.CameraType = Enum.CameraType.Scriptable
@@ -640,7 +730,9 @@ function closeMenu()
 	Menu.gui.Enabled = false
 	Menu.loading.Visible = false
 	Menu.waiting = false
+	Menu.queued = false
 	HUD.gui.Enabled = true
 	Cam.focus = nil
+	Cam.ready = false
 	HUD.refresh()
 end
