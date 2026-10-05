@@ -1,3 +1,4 @@
+Color3 = { fromRGB = function(r, g, b) return { R = r / 255, G = g / 255, B = b / 255 } end, new = function(r, g, b) return { R = r, G = g, B = b } end }
 -- Minimal stand-ins for the Roblox pieces server_3 uses, so its maths can run in plain Luau.
 local V = {}
 V.__index = function(v, k)
@@ -46,10 +47,9 @@ Random = {
 	end,
 }
 
-Config = { TEAM_NAMES = { "HOME", "AWAY" }, POINTS_TO_WIN = 25, WIN_BY = 2, SETS_TO_WIN = 1 }
+Config = { POINTS_TO_WIN = 25, WIN_BY = 2, SETS_TO_WIN = 1, SERVE_TIME = 8 }
 TEAM_SIZE, HALF_L, HALF_W, NET_H, G, R, REACH = 6, 32, 16, 8.7, 35, 0.42, 6.5
 ATTACK_H = NET_H + 2
-AI = { spike = 66, blockWin = 0.55 }
 rng = Random.new()
 CLOCK = 0
 function now() return CLOCK end
@@ -66,12 +66,9 @@ remote = {
 	FireClient = function() end,
 }
 function sendState() end
-function standHeight() return GY + 3 end
-teams = {}
-for t = 1, 2 do
-	teams[t] = { slots = {}, score = 0, sets = 0, serveIndex = 1 }
-	for i = 1, TEAM_SIZE do
-		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {}, root = nil }
-	end
-end
 pointsToWin = 25
+setsToWin = 1
+matchActive = true
+Enum = { Material = { Air = "Air" } }
+CFrame = { lookAt = function(p) return { Position = p } end }
+serveAt, serveDeadline = 0, 0

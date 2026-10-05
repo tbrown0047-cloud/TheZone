@@ -1,7 +1,8 @@
 
----------------------------------------------------------------- teams and players
+---------------------------------------------------------------- teams, lineups and players
 
--- Each team has TEAM_SIZE slots. A slot is played by a person or by an AI body.
+-- Each team has TEAM_SIZE slots, one per player in the lineup. A slot is played by a
+-- person or by an AI body wearing that player's name and number.
 local teams = {}
 for t = 1, 2 do
 	teams[t] = { id = t, slots = {}, score = 0, sets = 0, serveIndex = (t == 1) and 1 or 0 }
@@ -10,11 +11,54 @@ for t = 1, 2 do
 	end
 end
 local slotOfPlayer = {}
+local charConnections = {}
+
+-- Picks the clubs and lineups; each team's AI strength comes from its overall rating
+local function configureTeams(homeId, awayId, homeLineup, awayLineup)
+	for t, id in { homeId, awayId } do
+		local team = teams[t]
+		team.defId = id
+		team.def = Teams.list[id]
+		team.lineup = (t == 1 and homeLineup or awayLineup) or Teams.defaultLineup()
+		team.rating = Teams.ratings(id, team.lineup).OVR
+		team.ai = aiForSkill(Teams.skill(team.rating))
+	end
+end
+configureTeams(1, 2)
+
+-- The squad player a slot stands for
+local function playerOf(slot)
+	local team = teams[slot.team]
+	return Teams.squad(team.defId)[team.lineup[slot.index] or slot.index]
+end
+
+local function roleOf(slot)
+	local p = playerOf(slot)
+	return p and p.role or "OH"
+end
+
+-- A player's attribute as 0..1 (50 or lower = 0, 100 = 1)
+local function attr01(slot, attr)
+	local p = playerOf(slot)
+	return math.clamp(((p and p.attrs[attr] or 70) - 50) / 50, 0, 1)
+end
+
+local function teamAI(team)
+	return teams[team].ai
+end
 
 -- Rotation position 1-6 (1 = back right, the server; 2 front right ... 6 back middle).
 -- Players move round one place each time their team wins the serve back.
 local function rotationPos(slot)
 	return (slot.index - teams[slot.team].serveIndex) % 6 + 1
+end
+
+local function isFrontRow(slot)
+	if TEAM_SIZE ~= 6 then
+		return true
+	end
+	local pos = rotationPos(slot)
+	return pos >= 2 and pos <= 4
 end
 
 -- Six-a-side spots: {across, as a share of half the width (+ = the team's right), distance from the net}
@@ -23,7 +67,7 @@ local SIX = {
 	defend = { { 0.6, 0.7 }, { 0.55, 0.08 }, { 0, 0.08 }, { -0.55, 0.08 }, { -0.6, 0.7 }, { 0, 0.8 } },
 }
 
--- Where a player stands while waiting. lz is the distance from the net.
+-- Where a player stands while waiting
 local function homeSpot(slot, mode)
 	local s = side(slot.team)
 	if TEAM_SIZE == 6 then
@@ -40,7 +84,7 @@ local function homeSpot(slot, mode)
 end
 
 local function serveSpot(slot)
-	return Vector3.new(C.X, GY, C.Z + side(slot.team) * (HALF_L + 3))
+	return Vector3.new(C.X + side(slot.team) * HALF_W * 0.45, GY, C.Z + side(slot.team) * (HALF_L + 3))
 end
 
 local function standHeight(slot)
@@ -51,16 +95,26 @@ local function standHeight(slot)
 	return GY + 3
 end
 
+-- Turns an AI body smoothly (it has its own turning instead of the humanoid's)
+local function faceTowards(slot, dir)
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if slot.align and flat.Magnitude > 0.05 then
+		slot.align.CFrame = CFrame.lookAt(Vector3.zero, flat.Unit)
+	end
+end
+
 local function placeSlot(slot, pos)
 	local model = slot.model
 	if not model or not slot.root then
 		return
 	end
 	local p = Vector3.new(pos.X, standHeight(slot) + 0.2, pos.Z)
-	model:PivotTo(CFrame.lookAt(p, Vector3.new(C.X, p.Y, C.Z)))
-	slot.ai.goal = nil
+	local look = Vector3.new(C.X, p.Y, C.Z)
+	model:PivotTo(CFrame.lookAt(p, look))
+	faceTowards(slot, look - p)
+	slot.ai.vel = Vector3.zero
 	if slot.isAI and slot.humanoid then
-		slot.humanoid:MoveTo(p)
+		slot.humanoid:Move(Vector3.zero)
 	end
 end
 
@@ -71,8 +125,32 @@ local SKIN = {
 	Color3.fromRGB(141, 85, 36),
 	Color3.fromRGB(94, 58, 26),
 }
-local BOT_NAMES = { "Silva", "Kato", "Novak", "Reyes", "Okafor", "Lindqvist", "Moreau", "Park", "Rossi", "Haddad", "Ivanov", "Costa" }
-local ANIM_IDS = { idle = 507766666, run = 507767714, jump = 507765000 }
+local ANIM_IDS = { idle = 507766666, walk = 507777826, run = 507767714, jump = 507765000 }
+
+-- Shirt numbers on the front and back
+local function addNumber(model, number, color)
+	local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
+	if not torso then
+		return
+	end
+	for _, face in { Enum.NormalId.Back, Enum.NormalId.Front } do
+		local gui = Instance.new("SurfaceGui")
+		gui.Name = "ShirtNumber"
+		gui.Face = face
+		gui.CanvasSize = Vector2.new(100, 100)
+		gui.LightInfluence = 1
+		local text = Instance.new("TextLabel")
+		text.BackgroundTransparency = 1
+		text.Size = face == Enum.NormalId.Back and UDim2.fromScale(1, 1) or UDim2.new(0.4, 0, 0.4, 0)
+		text.Position = face == Enum.NormalId.Back and UDim2.new() or UDim2.fromScale(0.55, 0.12)
+		text.Font = Enum.Font.GothamBold
+		text.TextScaled = true
+		text.TextColor3 = color
+		text.Text = tostring(number)
+		text.Parent = gui
+		gui.Parent = torso
+	end
+end
 
 -- Used only if Roblox can't build a normal body
 local function simpleBody(slot)
@@ -86,7 +164,7 @@ local function simpleBody(slot)
 	local torso = Instance.new("Part")
 	torso.Name = "Torso"
 	torso.Size = Vector3.new(2, 2.6, 1)
-	torso.Color = Config.TEAM_COLORS[slot.team]
+	torso.Color = teams[slot.team].def.primary
 	torso.CanCollide = false
 	torso.Massless = true
 	torso.CFrame = hrp.CFrame
@@ -114,28 +192,28 @@ local function simpleBody(slot)
 	return model
 end
 
-local botCount = 0
 local function makeBot(slot)
+	local def = teams[slot.team].def
+	local p = playerOf(slot)
 	local desc = Instance.new("HumanoidDescription")
 	local skin = SKIN[rng:NextInteger(1, #SKIN)]
 	desc.HeadColor = skin
 	desc.LeftArmColor = skin
 	desc.RightArmColor = skin
-	desc.TorsoColor = Config.TEAM_COLORS[slot.team]
-	desc.LeftLegColor = Color3.fromRGB(35, 38, 48)
-	desc.RightLegColor = Color3.fromRGB(35, 38, 48)
+	desc.TorsoColor = def.primary
+	desc.LeftLegColor = def.secondary
+	desc.RightLegColor = def.secondary
 	local ok, model = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R15)
 	if not ok or not model then
 		warn("[Arena Volleyball] Using a simple AI body: " .. tostring(model))
 		model = simpleBody(slot)
 	end
-	-- a person may have taken this spot while the body was being made
-	if not slot.isAI or slot.model then
+	-- a person may have taken this spot, or the match ended, while the body was made
+	if not slot.isAI or slot.model or not matchActive then
 		model:Destroy()
 		return
 	end
-	botCount += 1
-	model.Name = BOT_NAMES[(botCount - 1) % #BOT_NAMES + 1]
+	model.Name = p and p.last or "PLAYER"
 	local animate = model:FindFirstChild("Animate")
 	if animate then
 		animate:Destroy()
@@ -147,18 +225,36 @@ local function makeBot(slot)
 		return
 	end
 	hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-	hum.WalkSpeed = AI.speed
+	hum.WalkSpeed = teamAI(slot.team).speed
 	hum.UseJumpPower = true
 	hum.JumpPower = 50
+	hum.AutoRotate = false -- turning is done by the AlignOrientation below
 	hum.BreakJointsOnDeath = false
 	hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
 	hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
 	hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
 	hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
 	model:SetAttribute("VolleyballAI", true)
+	if p then
+		local light = (def.primary.R + def.primary.G + def.primary.B) > 1.8
+		addNumber(model, p.number, light and Color3.fromRGB(20, 20, 30) or Color3.new(1, 1, 1))
+	end
 
-	slot.model, slot.humanoid, slot.root = model, hum, hrp
-	slot.ai = {}
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "FaceAttachment"
+	attachment.Parent = hrp
+	local align = Instance.new("AlignOrientation")
+	align.Name = "Facing"
+	align.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	align.Attachment0 = attachment
+	align.RigidityEnabled = false
+	align.MaxTorque = 1e6
+	align.Responsiveness = 14
+	align.Parent = hrp
+
+	slot.model, slot.humanoid, slot.root, slot.align = model, hum, hrp, align
+	-- everyone moves a little differently
+	slot.ai = { vel = Vector3.zero, pace = rng:NextNumber(0.88, 1.12), drift = rng:NextNumber(0, 10) }
 	model.Parent = courtFolder
 	if phase == "serve" and currentServer() == slot then
 		placeSlot(slot, serveSpot(slot))
@@ -183,7 +279,7 @@ local function makeBot(slot)
 	slot.anim = nil
 end
 
--- Plays idle / run / jump on an AI body
+-- Plays idle / walk / run / jump on an AI body
 local function animateBot(slot)
 	local tracks, hum, hrp = slot.tracks, slot.humanoid, slot.root
 	if not tracks or not hum or not hrp then
@@ -194,20 +290,24 @@ local function animateBot(slot)
 	local want = "idle"
 	if hum.FloorMaterial == Enum.Material.Air then
 		want = "jump"
-	elseif speed > 1.5 then
+	elseif speed > 10 then
 		want = "run"
+	elseif speed > 1.2 then
+		want = "walk"
 	end
 	if want ~= slot.anim then
 		if slot.anim and tracks[slot.anim] then
-			tracks[slot.anim]:Stop(0.15)
+			tracks[slot.anim]:Stop(0.2)
 		end
 		if tracks[want] then
-			tracks[want]:Play(0.15)
+			tracks[want]:Play(0.2)
 		end
 		slot.anim = want
 	end
 	if want == "run" and tracks.run then
-		tracks.run:AdjustSpeed(math.clamp(speed / 16, 0.6, 1.6))
+		tracks.run:AdjustSpeed(math.clamp(speed / 18, 0.7, 1.5))
+	elseif want == "walk" and tracks.walk then
+		tracks.walk:AdjustSpeed(math.clamp(speed / 8, 0.5, 1.4))
 	end
 end
 
@@ -215,7 +315,7 @@ local function clearBody(slot)
 	if slot.isAI and slot.model then
 		slot.model:Destroy()
 	end
-	slot.model, slot.humanoid, slot.root, slot.tracks, slot.anim = nil, nil, nil, nil, nil
+	slot.model, slot.humanoid, slot.root, slot.tracks, slot.anim, slot.align = nil, nil, nil, nil, nil, nil
 	slot.ai = {}
 end
 
@@ -237,28 +337,51 @@ local function bindCharacter(slot, plr, char)
 	end
 end
 
-local function addPlayer(plr)
-	if slotOfPlayer[plr] then
-		return
-	end
-	-- people fill HOME first, so you play with or against AI
-	local slot
+local function anyPeople()
 	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.player then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- Puts a person in a slot: the one asked for if an AI has it, else the first AI slot
+-- on that team, else on the other team. Returns the slot, or nil if both teams are full.
+local function addPlayer(plr, wantTeam, wantIndex)
+	if slotOfPlayer[plr] then
+		return slotOfPlayer[plr]
+	end
+	local slot
+	local order = (wantTeam == 2) and { 2, 1 } or { 1, 2 }
+	for _, t in order do
+		local preferred = wantIndex and teams[t].slots[wantIndex]
+		if t == order[1] and preferred and preferred.isAI then
+			slot = preferred
+		end
 		for _, s in teams[t].slots do
 			if s.isAI and not slot then
 				slot = s
 			end
 		end
+		if slot then
+			break
+		end
 	end
 	if not slot then
-		return -- teams are full: this person watches
+		return nil
 	end
 	clearBody(slot)
 	slot.isAI = false
 	slot.player = plr
 	slot.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
 	slotOfPlayer[plr] = slot
-	plr.CharacterAdded:Connect(function(char)
+	if charConnections[plr] then
+		charConnections[plr]:Disconnect()
+	end
+	charConnections[plr] = plr.CharacterAdded:Connect(function(char)
 		bindCharacter(slot, plr, char)
 	end)
 	if plr.Character then
@@ -268,21 +391,32 @@ local function addPlayer(plr)
 		serveDeadline = now() + Config.SERVE_TIME
 	end
 	sendState()
+	return slot
 end
 
 local function removePlayer(plr)
 	local slot = slotOfPlayer[plr]
+	if charConnections[plr] then
+		charConnections[plr]:Disconnect()
+		charConnections[plr] = nil
+	end
 	if not slot then
 		return
 	end
 	slotOfPlayer[plr] = nil
 	slot.player = nil
-	slot.model, slot.humanoid, slot.root = nil, nil, nil
+	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
 	slot.isAI = true
 	slot.ai = {}
+	if matchActive and not anyPeople() then
+		stopMatch() -- nobody left playing: back to the menu
+		return
+	end
 	if phase == "serve" and currentServer() == slot then
 		serveAt = now() + 2.5
 	end
-	task.spawn(makeBot, slot)
+	if matchActive then
+		task.spawn(makeBot, slot)
+	end
 	sendState()
 end

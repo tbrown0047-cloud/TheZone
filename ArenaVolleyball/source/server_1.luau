@@ -9,6 +9,7 @@ local StarterPlayer = game:GetService("StarterPlayer")
 
 local pack = script.Parent
 local Config = require(pack:WaitForChild("Config"))
+local Teams = require(pack:WaitForChild("Teams"))
 local clientTemplate = pack:WaitForChild("Client")
 
 if ReplicatedStorage:FindFirstChild("ArenaVolleyball") then
@@ -24,16 +25,27 @@ local G = Config.GRAVITY
 local R = Config.BALL_RADIUS
 local REACH = Config.REACH
 local ATTACK_H = NET_H + 2 -- height a spike is hit at
-local LEVEL = math.clamp(math.floor(Config.AI_LEVEL or 2), 1, 3)
-
--- How each AI level plays
-local AI_LEVELS = {
+-- How the AI plays at the bottom, middle and top of the skill range. A team's skill
+-- (from its overall rating, see Teams.skill) blends between these.
+local BASE_LEVELS = {
 	{ speed = 14, react = 0.38, quality = 0.55, spike = 54, blockTry = 0.3, blockWin = 0.4, letGo = 0.4, serveLo = 0.35, serveHi = 0.7, margin = 4.5, fault = 0.07, attackErr = 0.16, shank = 0.1, jumpServe = 0.1 },
 	{ speed = 17, react = 0.24, quality = 0.72, spike = 66, blockTry = 0.55, blockWin = 0.55, letGo = 0.75, serveLo = 0.45, serveHi = 0.82, margin = 3, fault = 0.04, attackErr = 0.09, shank = 0.05, jumpServe = 0.3 },
 	{ speed = 20, react = 0.14, quality = 0.88, spike = 78, blockTry = 0.8, blockWin = 0.65, letGo = 0.92, serveLo = 0.55, serveHi = 0.9, margin = 1.8, fault = 0.025, attackErr = 0.05, shank = 0.02, jumpServe = 0.5 },
 }
-local AI = AI_LEVELS[LEVEL]
-local pointsToWin = Config.POINTS_TO_WIN -- the menu can change this and AI
+local function aiForSkill(skill)
+	local a, b, t = BASE_LEVELS[1], BASE_LEVELS[2], skill * 2
+	if skill > 0.5 then
+		a, b, t = BASE_LEVELS[2], BASE_LEVELS[3], (skill - 0.5) * 2
+	end
+	local out = {}
+	for key, value in a do
+		out[key] = value + (b[key] - value) * t
+	end
+	return out
+end
+-- the menu sets these when someone starts a match
+local pointsToWin = Config.POINTS_TO_WIN
+local setsToWin = Config.SETS_TO_WIN
 
 local rng = Random.new()
 
@@ -51,10 +63,11 @@ local function flatDist(a, b)
 end
 
 -- Match state shared by every part of this script
-local phase = "waiting" -- waiting, serve, rally, point, setover, matchover
+local phase = "idle" -- idle, setup, serve, rally, point, setover, matchover
+local matchActive = false -- no match runs until someone starts one from the menu
 local servingTeam = 1
 local serveAt, serveDeadline, phaseUntil = 0, 0, 0
-local sendState, sendBall, currentServer, setupServe -- defined further down
+local sendState, sendBall, currentServer, setupServe, stopMatch -- defined further down
 
 ---------------------------------------------------------------- court
 
@@ -180,5 +193,7 @@ remote.Name = "Remote"
 remote.Parent = shared
 local configCopy = pack.Config:Clone()
 configCopy.Parent = shared
+local teamsCopy = pack.Teams:Clone()
+teamsCopy.Parent = shared
 shared.Parent = ReplicatedStorage
 courtFolder.Parent = workspace

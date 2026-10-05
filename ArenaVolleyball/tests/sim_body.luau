@@ -1,71 +1,92 @@
 
----------------------------------------------------------------- headless AI vs AI match
+---------------------------------------------------------------- headless AI vs AI matches
 
--- fake bodies: walk toward MoveTo goals at WalkSpeed, jump with JumpPower 50
-for t = 1, 2 do
-	for _, sl in teams[t].slots do
-		local root = { Position = homeSpot(sl) + Vector3.new(0, 3, 0), Size = Vector3.new(2, 2, 1), vy = 0, AssemblyLinearVelocity = Vector3.zero }
-		root.CFrame = { Lerp = function(self) return self end }
-		local hum = { HipHeight = 2, WalkSpeed = 16, FloorMaterial = "Plastic", Jump = false }
-		function hum:MoveTo(p)
-			self.goal = p
+-- fake bodies: walk where Humanoid:Move points at WalkSpeed, jump with JumpPower 50
+local function giveBodies()
+	for t = 1, 2 do
+		for _, sl in teams[t].slots do
+			local root = { Position = homeSpot(sl) + Vector3.new(0, 3, 0), Size = Vector3.new(2, 2, 1), vy = 0, AssemblyLinearVelocity = Vector3.zero }
+			local hum = { HipHeight = 2, WalkSpeed = 16, FloorMaterial = "Plastic", Jump = false, moveDir = Vector3.zero }
+			function hum:Move(dir)
+				self.moveDir = dir
+			end
+			sl.root, sl.humanoid = root, hum
+			sl.model = {
+				PivotTo = function(_, cf)
+					root.Position = cf.Position
+					root.vy = 0
+				end,
+				Destroy = function() end,
+			}
+			sl.ai = { vel = Vector3.zero, pace = 1, drift = 0 }
 		end
-		sl.root, sl.humanoid = root, hum
-		sl.model = {
-			PivotTo = function(_, cf)
-				root.Position = cf.Position
-				root.vy = 0
-			end,
-		}
 	end
 end
 
+local travelled = 0
 local function stepBodies(dt)
 	for t = 1, 2 do
 		for _, sl in teams[t].slots do
 			local r, h = sl.root, sl.humanoid
-			local stand = GY + 3
-			if h.Jump and r.Position.Y <= stand + 0.01 then
-				r.vy = 50
-			end
-			h.Jump = false
-			local y = r.Position.Y + r.vy * dt
-			r.vy -= 196.2 * dt
-			if y <= stand then
-				y, r.vy = stand, 0
-			end
-			h.FloorMaterial = (y > stand + 0.01) and Enum.Material.Air or "Plastic"
-			local pos = Vector3.new(r.Position.X, y, r.Position.Z)
-			if h.goal then
-				local d = Vector3.new(h.goal.X - pos.X, 0, h.goal.Z - pos.Z)
-				local m = d.Magnitude
-				local stepLen = h.WalkSpeed * dt
-				if m <= stepLen then
-					pos = Vector3.new(h.goal.X, y, h.goal.Z)
-					h.goal = nil
-				else
-					pos = pos + d * (stepLen / m)
+			if r and h then
+				local stand = GY + 3
+				if h.Jump and r.Position.Y <= stand + 0.01 then
+					r.vy = 50
 				end
+				h.Jump = false
+				local y = r.Position.Y + r.vy * dt
+				r.vy -= 196.2 * dt
+				if y <= stand then
+					y, r.vy = stand, 0
+				end
+				h.FloorMaterial = (y > stand + 0.01) and Enum.Material.Air or "Plastic"
+				local step = h.moveDir * (h.WalkSpeed * dt)
+				travelled += step.Magnitude
+				r.Position = Vector3.new(r.Position.X + step.X, y, r.Position.Z + step.Z)
+				r.AssemblyLinearVelocity = h.moveDir * h.WalkSpeed
 			end
-			r.Position = pos
 		end
 	end
 end
 
-startMatch()
+-- HOME 5 stars against AWAY 1.5 stars, then two evenly matched clubs
+local fixtures = { { 1, 12 }, { 5, 6 } }
+local results = {}
 local dt = 1 / 60
-local minutes = 20
-for _ = 1, 60 * 60 * minutes do
-	CLOCK += dt
-	stepBodies(dt)
-	stepBall(CLOCK)
-	updateMatch(CLOCK)
-	aiTeam(1, CLOCK)
-	aiTeam(2, CLOCK)
+for _, fixture in fixtures do
+	configureTeams(fixture[1], fixture[2])
+	local wins = { 0, 0 }
+	local points = { 0, 0 }
+	for _ = 1, 3 do
+		giveBodies()
+		matchActive = true
+		startMatch()
+		local limit = CLOCK + 60 * 30
+		while matchActive and CLOCK < limit do
+			CLOCK += dt
+			stepBodies(dt)
+			stepBall(CLOCK)
+			updateMatch(CLOCK)
+			if matchActive then
+				local first = (math.floor(CLOCK * 60) % 2) + 1
+				aiTeam(first, CLOCK, dt)
+				aiTeam(3 - first, CLOCK, dt)
+				flushTouches()
+			end
+		end
+		if teams[1].sets > teams[2].sets then
+			wins[1] += 1
+		else
+			wins[2] += 1
+		end
+		points[1] += teams[1].score
+		points[2] += teams[2].score
+	end
+	table.insert(results, { fixture = fixture, wins = wins, points = points })
 end
 
 -- tally what happened
-local reasons, hits, wins, points = {}, {}, {}, 0
+local reasons, hits, banners = {}, {}, 0
 local rallyTouches, current = {}, 0
 for _, e in EVENTS do
 	if e.kind == "fx" and e.a == "hit" then
@@ -75,35 +96,36 @@ for _, e in EVENTS do
 		end
 	elseif e.kind == "fx" and e.a == "block" then
 		hits.block = (hits.block or 0) + 1
-	elseif e.kind == "banner" then
-		if string.find(e.a, "POINT") or string.find(e.a, "WIN") or string.find(e.a, "SET") and not string.find(e.a, "FIRST") then
-			if string.find(e.a, " WIN") then
-				table.insert(wins, e.a .. " " .. e.b)
-			end
-			points += 1
-			local r = string.find(e.a, "POINT") and e.b or "set/match point"
-			reasons[r] = (reasons[r] or 0) + 1
-			table.insert(rallyTouches, current)
-			current = 0
-		end
+	elseif e.kind == "act" then
+		hits["anim:" .. e.b] = (hits["anim:" .. e.b] or 0) + 1
+	elseif e.kind == "banner" and (string.find(e.a, "POINT") or string.find(e.a, " WIN")) then
+		banners += 1
+		local r = string.find(e.a, "POINT") and e.b or "set/match point"
+		reasons[r] = (reasons[r] or 0) + 1
+		table.insert(rallyTouches, current)
+		current = 0
 	end
 end
-print(string.format("%d simulated minutes: %d points, %d matches finished", minutes, points, #wins))
-for _, w in wins do
-	print("  " .. w)
+for _, r in results do
+	local a, b = Teams.list[r.fixture[1]], Teams.list[r.fixture[2]]
+	print(string.format("%s (%.1f stars) v %s (%.1f stars): matches %d-%d, final-set points %d-%d", a.name, Teams.stars(Teams.ratings(r.fixture[1]).OVR), b.name, Teams.stars(Teams.ratings(r.fixture[2]).OVR), r.wins[1], r.wins[2], r.points[1], r.points[2]))
 end
 print("how points ended:")
 for r, n in reasons do
 	print(string.format("  %-22s %d", r, n))
 end
-print("touches by type:")
-for k, n in hits do
-	print(string.format("  %-8s %d", k, n))
+print("touches and animation cues:")
+local keys = {}
+for k in hits do
+	table.insert(keys, k)
 end
-local total, longest = 0, 0
+table.sort(keys)
+for _, k in keys do
+	print(string.format("  %-16s %d", k, hits[k]))
+end
+local total = 0
 for _, n in rallyTouches do
 	total += n
-	longest = math.max(longest, n)
 end
-print(string.format("average touches per rally %.1f, longest %d", total / math.max(#rallyTouches, 1), longest))
-print("final phase: " .. phase .. "  score " .. teams[1].score .. "-" .. teams[2].score)
+print(string.format("average touches per rally %.1f; AI players moved %.0f studs per point on average", total / math.max(#rallyTouches, 1), travelled / math.max(banners, 1) / 12))
+print("final phase: " .. phase .. "  active " .. tostring(matchActive))

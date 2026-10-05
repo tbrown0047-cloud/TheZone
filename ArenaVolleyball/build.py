@@ -19,6 +19,7 @@ def read(name):
 server = "".join(read(f"server_{i}.luau") for i in range(1, 5))
 client = "".join(f.read_text(encoding="utf-8") for f in sorted(SRC.glob("client_*.luau")))
 config = read("Config.luau")
+teams = read("Teams.luau")
 
 
 def luau_tool(name):
@@ -33,18 +34,21 @@ def run_checks():
         print("Luau tools not found: skipping syntax checks and tests")
         return
     tmp = pathlib.Path(tempfile.mkdtemp())
-    for name, src in {"Server": server, "Client": client, "Config": config}.items():
+    for name, src in {"Server": server, "Client": client, "Config": config, "Teams": teams}.items():
         (tmp / f"{name}.luau").write_text(src, encoding="utf-8")
         r = subprocess.run([compiler, "--null", str(tmp / f"{name}.luau")], capture_output=True, text=True)
         if r.returncode != 0:
             sys.exit(f"{name}: syntax error\n{r.stdout}{r.stderr}")
         print(f"{name}: ok ({len(src.splitlines())} lines)")
     test = lambda n: (TESTS / n).read_text(encoding="utf-8")
-    ai_part = read("server_4.luau").split("-" * 64 + " input from players")[0]
+    server_1 = read("server_1.luau")
+    skill = server_1[server_1.index("local BASE_LEVELS"):server_1.index("-- the menu sets these")]
+    prelude = (test("test_prelude.luau") + skill + "local Teams = (function()\n" + read("Teams.luau") + "\nend)()\n"
+               + read("server_2.luau") + read("server_3.luau"))
+    ai_part = read("server_4.luau").split("-" * 64 + " starting and joining from the menu")[0]
     suites = {
-        "ball and rules": test("test_prelude.luau") + read("server_3.luau") + test("test_body.luau"),
-        "AI vs AI match": test("test_prelude.luau") + test("sim_extra.luau") + read("server_2.luau")
-        + read("server_3.luau") + ai_part + test("sim_body.luau"),
+        "ball and rules": prelude + test("test_body.luau"),
+        "AI vs AI matches": prelude + ai_part + test("sim_body.luau"),
     }
     for title, code in suites.items():
         path = tmp / "suite.luau"
@@ -62,6 +66,7 @@ INSTANCES = [
     ("Folder", "ArenaVolleyball", None, -1),
     ("Script", "Server", server, 0),
     ("ModuleScript", "Config", config, 0),
+    ("ModuleScript", "Teams", teams, 0),
     ("LocalScript", "Client", client, 0),
 ]
 

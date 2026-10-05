@@ -145,29 +145,77 @@ local function setSpot(team)
 end
 
 -- The teammate a set goes to: people first, then whoever is nearest the net
+-- Lanes hitters attack from, across the court from the team's point of view
+local LANE = { OH = -1, OPP = 1, MB = 0 }
+local SET_WEIGHT = { OH = 4, OPP = 3, MB = 2 }
+
+-- The teammate a set goes to: a person if there is one, otherwise a front-row hitter
+-- (outside hitters most often, then the opposite, then a quick ball to the middle)
 local function partnerOf(slot)
-	local best, bestScore = nil, -math.huge
+	local options, total, person = {}, 0, nil
 	for _, s in teams[slot.team].slots do
 		if s ~= slot and s.root then
-			local score = (s.isAI and 0 or 100) - math.abs(s.root.Position.Z - C.Z)
-			if score > bestScore then
-				best, bestScore = s, score
+			if not s.isAI and not person then
+				person = s
 			end
+			local role = roleOf(s)
+			if isFrontRow(s) and SET_WEIGHT[role] then
+				table.insert(options, s)
+				total += SET_WEIGHT[role]
+			end
+		end
+	end
+	if person then
+		return person
+	end
+	if #options > 0 then
+		local pick = rng:NextNumber(0, total)
+		for _, s in options do
+			pick -= SET_WEIGHT[roleOf(s)]
+			if pick <= 0 then
+				return s
+			end
+		end
+		return options[#options]
+	end
+	-- nobody in the front row: whoever is nearest the net
+	local best, bestZ = nil, math.huge
+	for _, s in teams[slot.team].slots do
+		if s ~= slot and s.root and math.abs(s.root.Position.Z - C.Z) < bestZ then
+			best, bestZ = s, math.abs(s.root.Position.Z - C.Z)
 		end
 	end
 	return best or slot
 end
 
+-- Where a set to this attacker is played: his lane, or where a person is standing
 local function attackSpot(team, attacker)
-	local wing = HALF_W * 0.55
-	local lx = wing
+	local s = side(team)
+	local lx = s * HALF_W * 0.6 * -1
 	if attacker and attacker.root then
-		lx = math.clamp(attacker.root.Position.X - C.X, -HALF_W + 3, HALF_W - 3)
-		if attacker.isAI then
-			lx = (lx >= 0 and 1 or -1) * wing
+		if attacker.isAI and TEAM_SIZE == 6 then
+			lx = s * HALF_W * 0.6 * (LANE[roleOf(attacker)] or -1)
+		else
+			lx = math.clamp(attacker.root.Position.X - C.X, -HALF_W + 3, HALF_W - 3)
 		end
 	end
 	return floorPoint(team, lx, 3.5) + Vector3.new(0, ATTACK_H - R, 0)
+end
+
+-- How hard a spike is hit: AI from the team's level, people from timing; both lifted by attack rating
+local function spikeSpeed(slot, q)
+	local attack = attr01(slot, "ATK")
+	if slot.isAI then
+		return teamAI(slot.team).spike * (0.82 + 0.36 * attack)
+	end
+	return (62 + 26 * q) * (0.9 + 0.2 * attack)
+end
+
+-- Animation cue for every player's screen
+local function act(slot, kind)
+	if slot and slot.model then
+		remote:FireAllClients("act", slot.model, kind)
+	end
 end
 
 -- Keeps an aim point on the other half, at most `margin` studs past the lines
@@ -224,19 +272,18 @@ local function awardPoint(winner, reason)
 		servingTeam = winner
 		w.serveIndex = w.serveIndex % TEAM_SIZE + 1
 	end
-	local names = Config.TEAM_NAMES
 	if w.score >= pointsToWin and w.score - l.score >= Config.WIN_BY then
 		w.sets += 1
-		if w.sets >= Config.SETS_TO_WIN then
+		if w.sets >= setsToWin then
 			phase, phaseUntil = "matchover", now() + 9
-			banner(names[winner] .. " WIN", w.score .. " - " .. l.score .. "   ·   new match soon", winner)
+			banner(teams[winner].def.name .. " WIN", "FULL TIME   ·   " .. w.score .. " - " .. l.score, winner)
 		else
 			phase, phaseUntil = "setover", now() + 5
-			banner(names[winner] .. " TAKE THE SET", w.score .. " - " .. l.score, winner)
+			banner(teams[winner].def.name .. " TAKE THE SET", w.score .. " - " .. l.score, winner)
 		end
 	else
-		phase, phaseUntil = "point", now() + 2.6
-		banner(names[winner] .. " POINT", reason, winner)
+		phase, phaseUntil = "point", now() + 3.4
+		banner(teams[winner].def.short .. " POINT", reason, winner)
 	end
 	sendState()
 end
@@ -276,24 +323,35 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 	return true, math.clamp(q, 0.05, 1)
 end
 
+-- A pass or set may drift, but it stays on the passer's side of the net
+local function ownSide(team, p, minLz)
+	local s = side(team)
+	if (p.Z - C.Z) * s < minLz then
+		return Vector3.new(p.X, p.Y, C.Z + s * minLz)
+	end
+	return p
+end
+
 -- Works out where a touch sends the ball
 local function shotFor(slot, kind, p, aim, q, touchNo)
 	local team = slot.team
 	if (kind == "bump" or kind == "set") and touchNo >= 3 then
 		-- third touch has to go over
-		local target = (aim and clampToOpp(team, aim, 0) or randomOpp(team, 4)) + jitter((1 - q) * 8)
+		local target = clampToOpp(team, (aim and clampToOpp(team, aim, 0) or randomOpp(team, 4)) + jitter((1 - q) * 8), 1)
 		return solveOver(p, target, 1.25, 2.2), "over"
 	elseif kind == "bump" then
-		return solve(p, setSpot(team) + jitter((1 - q) * 9), 1.25), "bump"
+		return solve(p, ownSide(team, setSpot(team) + jitter((1 - q) * 9), 1.5), 1.25), "bump"
 	elseif kind == "set" then
-		return solve(p, attackSpot(team, partnerOf(slot)) + jitter((1 - q) * 6), 1.15), "set"
+		local hitter = partnerOf(slot)
+		local quick = hitter.isAI and roleOf(hitter) == "MB" and TEAM_SIZE == 6
+		return solve(p, ownSide(team, attackSpot(team, hitter) + jitter((1 - q) * 6), 1.5), quick and 0.8 or 1.15), "set"
 	elseif kind == "tip" then
 		local target = aim and clampToOpp(team, aim, 0)
 			or floorPoint(3 - team, rng:NextNumber(-HALF_W + 3, HALF_W - 3), rng:NextNumber(3, 9))
 		return solveOver(p, target + jitter((1 - q) * 3), 0.8, 1.6), "tip"
 	end
 	local target = clampToOpp(team, aim or randomOpp(team, 3), 3) + jitter((1 - q) * 7)
-	local speed = slot.isAI and AI.spike or (62 + 26 * q)
+	local speed = spikeSpeed(slot, q)
 	local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z).Magnitude
 	return solveOver(p, target, math.max(flat / speed, 0.28), 1.3), "spike"
 end
@@ -316,7 +374,8 @@ local function touch(slot, kind, p, t, aim, q)
 	ball.touches, ball.lastTeam, ball.lastSlot, ball.lastKind = n, team, slot, shot
 	slot.lastTouch = now()
 	launch(p, v, t)
-	remote:FireAllClients("fx", "hit", p, { kind = shot, q = q, user = slot.player and slot.player.UserId or 0 })
+	act(slot, kind)
+	remote:FireAllClients("fx", "hit", p, { kind = shot, q = q, user = slot.player and slot.player.UserId or 0, team = team, index = slot.index })
 	sendState()
 	return true
 end
@@ -331,7 +390,8 @@ local function findBlocker(team, p)
 			local depth = (rp.Z - C.Z) * s
 			local airborne = rp.Y > standHeight(sl) + 1
 			if airborne and depth > -0.5 and depth < 5 and math.abs(rp.X - p.X) < 3.8 and p.Y < rp.Y + 5.5 and p.Y > rp.Y - 1 then
-				if not (sl.isAI and rng:NextNumber() > AI.blockWin) then
+				local win = math.min(teamAI(team).blockWin * (0.7 + 0.6 * attr01(sl, "BLK")), 0.92)
+				if not (sl.isAI and rng:NextNumber() > win) then
 					return sl
 				end
 			end
@@ -500,6 +560,7 @@ local function doServe(slot, aim, power, airborne, rootPos)
 	ball.holder = nil
 	phase = "rally"
 	launch(p, v, now())
-	remote:FireAllClients("fx", "hit", p, { kind = "serve", q = 1, user = slot.player and slot.player.UserId or 0 })
+	act(slot, airborne and "jumpserve" or "serve")
+	remote:FireAllClients("fx", "hit", p, { kind = "serve", q = 1, user = slot.player and slot.player.UserId or 0, team = team, index = slot.index })
 	sendState()
 end

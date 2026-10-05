@@ -5,10 +5,6 @@ return {
 	POINTS_TO_WIN = 25, -- points needed to win a set
 	WIN_BY = 2,
 	SETS_TO_WIN = 1, -- 1 = one set, 2 = best of three, 3 = best of five
-	AI_LEVEL = 2, -- 1 rookie, 2 pro, 3 legend
-
-	TEAM_NAMES = { "HOME", "AWAY" },
-	TEAM_COLORS = { Color3.fromRGB(70, 140, 255), Color3.fromRGB(255, 96, 76) },
 
 	-- The court is built here, on the ground below this point.
 	COURT_CENTER = Vector3.new(0, 0, 110),
@@ -22,4 +18,8 @@ return {
 	BALL_RADIUS = 0.42, -- a real ball is 0.38; a touch bigger so it's easy to follow
 	REACH = 6.5, -- how far from your body you can play the ball
 	SERVE_TIME = 8, -- seconds to serve (8 s, like the real rule) before one is made for you
+
+	-- Your dive can play a marketplace emote you own instead of the built-in dive.
+	-- Paste the emote's ID (the number in its catalog link); 0 uses the built-in dive.
+	DIVE_EMOTE_ID = 87869019490136,
 }

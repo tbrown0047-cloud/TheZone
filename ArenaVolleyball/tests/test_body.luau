@@ -63,7 +63,7 @@ end
 
 print("== AWAY sets to an attacker on the right")
 reset(2, 1, "bump")
-teams[2].slots[2].root = { Position = Vector3.new(C.X + 7, GY + 3, C.Z - 10) }
+teams[2].slots[2].root = { Position = Vector3.new(C.X + 7, GY + 3, C.Z - 10), Size = Vector3.new(2, 2, 1) }
 local setter = teams[2].slots[1]
 touch(setter, "set", setSpot(2), CLOCK, nil, 0.95)
 local spot = attackSpot(2, teams[2].slots[2])
@@ -88,8 +88,8 @@ print("== HOME blocker in the air at the net vs an AWAY spike")
 reset(2, 2, "set")
 local blocker = teams[1].slots[1]
 blocker.isAI = false
-blocker.humanoid = {}
-blocker.root = { Position = Vector3.new(C.X + 6, GY + 8, C.Z + 1.6) }
+blocker.humanoid = { HipHeight = 2 }
+blocker.root = { Position = Vector3.new(C.X + 6, GY + 8, C.Z + 1.6), Size = Vector3.new(2, 2, 1) }
 touch(teams[2].slots[2], "spike", Vector3.new(C.X + 6, GY + ATTACK_H + 1, C.Z - 3), CLOCK, floorPoint(1, 6, 18), 1)
 runUntilRest(CLOCK + 10)
 local blocked = false

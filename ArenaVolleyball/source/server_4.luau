@@ -11,25 +11,41 @@ function sendState(plr)
 	local roster = { {}, {} }
 	for t = 1, 2 do
 		for _, s in teams[t].slots do
-			if s.player then
-				local st = s.stats or {}
-				table.insert(roster[t], { id = s.player.UserId, index = s.index, k = st.kills or 0, a = st.aces or 0, b = st.blocks or 0, d = st.digs or 0 })
-			end
+			local p = playerOf(s)
+			local st = s.stats or {}
+			table.insert(roster[t], {
+				index = s.index,
+				name = s.player and string.upper(s.player.DisplayName) or (p and p.last or "PLAYER"),
+				number = p and p.number or s.index,
+				role = p and p.role or "OH",
+				ovr = p and p.ovr or 70,
+				id = s.player and s.player.UserId or 0,
+				model = s.model,
+				k = st.kills or 0,
+				a = st.aces or 0,
+				b = st.blocks or 0,
+				d = st.digs or 0,
+			})
 		end
 	end
 	local data = {
+		active = matchActive,
 		phase = phase,
 		score = { teams[1].score, teams[2].score },
 		sets = { teams[1].sets, teams[2].sets },
 		serving = servingTeam,
 		server = srv and srv.player and srv.player.UserId or 0,
+		serverTeam = srv and srv.team or 0,
+		serverIndex = srv and srv.index or 0,
 		touches = ball.touches,
 		touchTeam = ball.lastTeam,
 		roster = roster,
 		deadline = serveDeadline,
 		serveIndex = { teams[1].serveIndex, teams[2].serveIndex },
-		level = LEVEL,
+		teamIds = { teams[1].defId, teams[2].defId },
+		lineups = { teams[1].lineup, teams[2].lineup },
 		points = pointsToWin,
+		setsToWin = setsToWin,
 		teamSize = TEAM_SIZE,
 	}
 	if plr then
@@ -53,9 +69,13 @@ function setupServe()
 	for t = 1, 2 do
 		teams[t].brain = {}
 	end
-	placeSlot(srv, serveSpot(srv))
-	srv.ai.jumpServe = rng:NextNumber() < AI.jumpServe
+	-- an AI server who has already walked to the line isn't teleported
+	if not (srv.isAI and srv.root and flatDist(srv.root.Position, serveSpot(srv)) < 4) then
+		placeSlot(srv, serveSpot(srv))
+	end
+	srv.ai.jumpServe = rng:NextNumber() < teamAI(srv.team).jumpServe * (0.6 + 0.8 * attr01(srv, "SRV"))
 	srv.ai.serveJumped = false
+	srv.ai.prepped = false
 	sendBall()
 	sendState()
 end
@@ -66,25 +86,63 @@ local function startMatch()
 	servingTeam = (matchNo % 2 == 1) and 1 or 2 -- take turns serving first
 	for t = 1, 2 do
 		teams[t].score, teams[t].sets = 0, 0
-		for _, s in teams[t].slots do
-			s.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
-		end
 		teams[t].serveIndex = (t == servingTeam) and 1 or 0
 		for _, s in teams[t].slots do
+			s.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
 			placeSlot(s, homeSpot(s))
 		end
 	end
 	setupServe()
-	local format = Config.SETS_TO_WIN > 1 and ("BEST OF " .. (Config.SETS_TO_WIN * 2 - 1) .. " SETS") or "ONE SET"
+	local format = setsToWin > 1 and ("BEST OF " .. (setsToWin * 2 - 1) .. " SETS") or "ONE SET"
 	banner("FIRST TO " .. pointsToWin, format, 0)
 end
 
+local function moveOffCourt(plr)
+	local char = plr.Character
+	if char and char.PrimaryPart then
+		local spot = Vector3.new(C.X + HALF_W + 24, GY + 4, C.Z)
+		char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, C.Z)))
+	end
+end
+
+-- Ends the match: people go back to the menu, AI bodies are removed, the court goes quiet
+function stopMatch()
+	matchActive = false
+	phase = "idle"
+	ball.live = false
+	ball.mode = "hidden"
+	ball.holder = nil
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			local plr = s.player
+			if plr then
+				slotOfPlayer[plr] = nil
+				if charConnections[plr] then
+					charConnections[plr]:Disconnect()
+					charConnections[plr] = nil
+				end
+				-- forget the person's character before clearing, so it isn't destroyed
+				s.player, s.model, s.humanoid, s.root, s.align = nil, nil, nil, nil, nil
+				s.isAI = true
+				moveOffCourt(plr)
+			end
+			clearBody(s)
+		end
+	end
+	sendBall()
+	sendState()
+end
+
 local function aiServe(slot, jumped)
-	local power = rng:NextNumber(AI.serveLo, AI.serveHi)
-	if rng:NextNumber() < AI.fault then
+	local ai = teamAI(slot.team)
+	local serve = attr01(slot, "SRV")
+	local lo = math.clamp(ai.serveLo + (serve - 0.5) * 0.15, 0.2, 0.86)
+	local hi = math.clamp(ai.serveHi + (serve - 0.5) * 0.15, lo + 0.05, 0.92)
+	local power = rng:NextNumber(lo, hi)
+	if rng:NextNumber() < ai.fault * (1.5 - serve) then
 		power = rng:NextNumber() < 0.5 and 0.05 or 0.99
 	end
-	doServe(slot, smartTarget(slot.team, AI.margin + 1), power, jumped == true, slot.root.Position)
+	doServe(slot, smartTarget(slot.team, ai.margin + 1), power, jumped == true, slot.root.Position)
 end
 
 local function updateMatch(t)
@@ -94,71 +152,127 @@ local function updateMatch(t)
 		teams[1].score, teams[2].score = 0, 0
 		setupServe()
 	elseif phase == "matchover" and t >= phaseUntil then
-		startMatch()
+		stopMatch()
 	elseif phase == "serve" then
 		local srv = currentServer()
 		if srv.root then
-			if srv.isAI and t >= serveAt then
-				if srv.ai.jumpServe and not srv.ai.serveJumped and srv.humanoid then
-					-- jump serve: leave the ground, hit it a moment later
-					srv.ai.serveJumped = true
-					srv.humanoid.Jump = true
-					serveAt = t + 0.25
-				else
-					aiServe(srv, srv.ai.serveJumped)
+			if srv.isAI then
+				if not srv.ai.prepped and t >= serveAt - 0.5 then
+					srv.ai.prepped = true
+					act(srv, "serveprep")
 				end
-			elseif not srv.isAI and t >= serveDeadline then
+				if t >= serveAt then
+					if srv.ai.jumpServe and not srv.ai.serveJumped and srv.humanoid then
+						-- jump serve: leave the ground, hit it a moment later
+						srv.ai.serveJumped = true
+						srv.humanoid.Jump = true
+						serveAt = t + 0.25
+					else
+						aiServe(srv, srv.ai.serveJumped)
+					end
+				end
+			elseif t >= serveDeadline then
 				doServe(srv, floorPoint(3 - srv.team, 0, HALF_L * 0.5), 0.5, false, srv.root.Position)
 			end
 		end
 	end
 end
 
----------------------------------------------------------------- AI
+---------------------------------------------------------------- AI movement
+-- AI players steer instead of walking on rails: they speed up and slow down, keep a
+-- little space from teammates, react a beat apart, and shuffle facing the ball.
 
-local function face(slot, target)
-	local hrp = slot.root
-	local look = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
-	if look.Magnitude > 0.5 then
-		hrp.CFrame = hrp.CFrame:Lerp(CFrame.lookAt(hrp.Position, hrp.Position + look), 0.2)
-	end
-end
-
-local function moveSlot(slot, order, t, lookAt)
+local function steer(slot, order, t, dt, lookAt)
 	local hum, hrp, mem = slot.humanoid, slot.root, slot.ai
-	local grounded = hum.FloorMaterial ~= Enum.Material.Air
-	if order.hold then
-		if mem.goal then
-			hum:MoveTo(hrp.Position)
-			mem.goal = nil
-		end
-		if grounded then
-			face(slot, lookAt)
-		end
-		return
-	end
+	local ai = teamAI(slot.team)
 	local s = side(slot.team)
-	local lz = math.clamp((order.pos.Z - C.Z) * s, 1.4, HALF_L + 8)
-	local lx = math.clamp(order.pos.X - C.X, -HALF_W - 8, HALF_W + 8)
-	local pos = Vector3.new(C.X + lx, GY, C.Z + s * lz)
-	hum.WalkSpeed = AI.speed + (order.run and 3 or 0)
-	if flatDist(hrp.Position, pos) > 0.9 then
-		if not mem.goal or flatDist(mem.goal, pos) > 0.6 or t - (mem.moveAt or 0) > 2 then
-			hum:MoveTo(pos)
-			mem.goal, mem.moveAt = pos, t
+	local here = hrp.Position
+	local grounded = hum.FloorMaterial ~= Enum.Material.Air
+
+	-- take up a new target after a short personal delay; small corrections are instant
+	if order.pos then
+		local lz = math.clamp((order.pos.Z - C.Z) * s, 1.4, HALF_L + 8)
+		local lx = math.clamp(order.pos.X - C.X, -HALF_W - 8, HALF_W + 8)
+		local want = Vector3.new(C.X + lx, GY, C.Z + s * lz)
+		if not mem.target or flatDist(want, mem.target) < 1.5 or order.sprint then
+			mem.target, mem.switchAt = want, nil
+		elseif not mem.switchAt then
+			mem.switchAt = t + rng:NextNumber(0.03, order.run and 0.12 or 0.35)
+		elseif t >= mem.switchAt then
+			mem.target, mem.switchAt = want, nil
 		end
+	end
+
+	local vel = mem.vel or Vector3.zero
+	if (slot.diveUntil or 0) > t then
+		vel = vel * (1 - math.min(dt * 2.5, 1)) -- sliding out of a dive
 	else
-		if mem.goal then
-			hum:MoveTo(hrp.Position)
-			mem.goal = nil
+		local maxSpeed = ai.speed * (mem.pace or 1)
+		if order.sprint then
+			maxSpeed += 6
+		elseif order.run then
+			maxSpeed += 3
+		elseif order.walk then
+			maxSpeed = 8.5 * (mem.pace or 1)
 		end
-		if grounded then
-			face(slot, lookAt)
+		if (mem.recoverUntil or 0) > t then
+			maxSpeed *= 0.35 -- getting up after a dive
 		end
+		local desired = Vector3.zero
+		if mem.target and not order.hold then
+			local offset = Vector3.new(mem.target.X - here.X, 0, mem.target.Z - here.Z)
+			local dist = offset.Magnitude
+			if dist > 0.35 then
+				desired = offset.Unit * math.min(maxSpeed, 1.5 + dist * 3) -- ease into the spot
+			end
+		end
+		-- keep a little space from teammates
+		for _, other in teams[slot.team].slots do
+			if other ~= slot and other.root then
+				local away = Vector3.new(here.X - other.root.Position.X, 0, here.Z - other.root.Position.Z)
+				local d = away.Magnitude
+				if d > 0.01 and d < 2.6 then
+					desired += away.Unit * (2.6 - d) * 2
+				end
+			end
+		end
+		-- accelerate towards it instead of snapping
+		local accel = grounded and ((order.sprint or order.run) and 46 or 24) or 6
+		local change = desired - vel
+		local maxChange = accel * dt
+		if change.Magnitude > maxChange then
+			change = change.Unit * maxChange
+		end
+		vel += change
+	end
+	mem.vel = vel
+
+	local speed = vel.Magnitude
+	if speed > 0.3 then
+		hum.WalkSpeed = speed
+		hum:Move(vel.Unit)
+	else
+		hum:Move(Vector3.zero)
+	end
+
+	-- watch the ball while shuffling; turn into the run when sprinting
+	local toBall = Vector3.new(lookAt.X - here.X, 0, lookAt.Z - here.Z)
+	local face = toBall.Magnitude > 0.5 and toBall.Unit or Vector3.new(0, 0, -s)
+	if speed > 11 then
+		local w = math.clamp((speed - 11) / 8, 0, 0.85)
+		face = face * (1 - w) + vel.Unit * w
+	end
+	if grounded or (slot.diveUntil or 0) > t then
+		faceTowards(slot, face)
 	end
 end
+
+---------------------------------------------------------------- AI decisions
+
+local deferredTouches = {}
 
 local function aiTouch(slot, kind, t)
+	local ai = teamAI(slot.team)
 	local bp = ballPos(t)
 	local use = kind
 	if kind == "spike" and rng:NextNumber() < 0.15 then
@@ -172,14 +286,17 @@ local function aiTouch(slot, kind, t)
 	if not ok then
 		return
 	end
-	q = math.clamp(q * 0.35 + AI.quality * 0.65 + rng:NextNumber(-0.12, 0.08), 0.1, 1)
-	if use ~= "spike" and rng:NextNumber() < AI.shank then
+	-- touch quality: the team's level and the player's own rating for that skill
+	local skill = attr01(slot, (use == "set") and "SET" or (use == "bump") and "REC" or "ATK")
+	local level = ai.quality * 0.55 + skill * 0.45
+	q = math.clamp(q * 0.35 + level * 0.65 + rng:NextNumber(-0.12, 0.08), 0.1, 1)
+	if use ~= "spike" and rng:NextNumber() < ai.shank * (1.5 - skill) then
 		q = 0.08 -- shanked pass
 	end
 	local aim = nil
 	if use == "spike" then
-		aim = smartTarget(slot.team, AI.margin)
-		if rng:NextNumber() < AI.attackErr then
+		aim = smartTarget(slot.team, ai.margin)
+		if rng:NextNumber() < ai.attackErr * (1.5 - skill) then
 			-- attack error: just past a line
 			local opp = 3 - slot.team
 			if rng:NextNumber() < 0.5 then
@@ -190,15 +307,33 @@ local function aiTouch(slot, kind, t)
 			end
 		end
 	elseif nextTouchNo(slot.team) >= 3 then
-		aim = randomOpp(slot.team, AI.margin + 2)
+		aim = randomOpp(slot.team, ai.margin + 2)
 	end
-	touch(slot, use, bp, t, aim, q)
+	-- applied after both teams have thought this frame, so neither side reacts a frame early
+	table.insert(deferredTouches, { slot = slot, use = use, bp = bp, t = t, aim = aim, q = q, id = ball.id })
+end
+
+local function flushTouches()
+	for _, d in deferredTouches do
+		if ball.id == d.id and ball.live and ball.mode == "fly" then
+			touch(d.slot, d.use, d.bp, d.t, d.aim, d.q)
+		end
+	end
+	table.clear(deferredTouches)
+end
+
+-- Where a hitter waits to start his run-up: behind his lane
+local function approachSpot(slot)
+	local s = side(slot.team)
+	local lane = LANE[roleOf(slot)] or -1
+	return Vector3.new(C.X + s * HALF_W * 0.62 * lane, GY, C.Z + s * 9)
 end
 
 -- Decides what each AI on a team does while the ball is in play
 local function planRally(team, t, brain)
 	local orders = {}
 	local tm = teams[team]
+	local ai = tm.ai
 	local s = side(team)
 	local n = nextTouchNo(team)
 	local land = ballPos(landTime())
@@ -208,7 +343,7 @@ local function planRally(team, t, brain)
 		if out then
 			if brain.letGoId ~= ball.id then
 				brain.letGoId = ball.id
-				brain.letGo = rng:NextNumber() < AI.letGo
+				brain.letGo = rng:NextNumber() < ai.letGo
 			end
 			if brain.letGo then
 				mine = false
@@ -240,8 +375,20 @@ local function planRally(team, t, brain)
 			for _, sl in tm.slots do
 				if sl.root and not (TEAM_SIZE > 1 and ball.lastSlot == sl) then
 					local d = flatDist(sl.root.Position, cp)
+					local role = roleOf(sl)
 					if not sl.isAI then
 						d -= 3 -- leave it to a nearby person
+					end
+					if kind == "set" and role == "S" then
+						d -= 12 -- the setter takes the second ball
+					elseif kind == "bump" and n == 1 then
+						if role == "S" then
+							d += 5 -- keep the setter free to set
+						elseif role == "MB" then
+							d += 3
+						elseif role == "L" then
+							d -= 2
+						end
 					end
 					if d < bestD then
 						who, bestD = sl, d
@@ -257,66 +404,95 @@ local function planRally(team, t, brain)
 		if who and who.isAI and who.root and who.humanoid then
 			local stand = Vector3.new(cp.X, GY, cp.Z)
 			if kind == "spike" then
-				stand += Vector3.new(0, 0, s * 1.0)
-			end
-			orders[who] = { pos = stand, run = true }
-			if kind == "spike" and who.ai.jumpId ~= ball.id and tc - t < 0.32 and flatDist(who.root.Position, cp) < 4.5 then
-				who.ai.jumpId = ball.id
-				who.humanoid.Jump = true
+				-- run-up: wait behind and outside the ball, then attack it and jump
+				local lane = (cp.X - C.X) >= 0 and 1 or -1
+				local start = Vector3.new(cp.X + lane * 2.5, GY, cp.Z + s * 6)
+				local runTime = flatDist(start, cp) / (ai.speed + 6) + 0.3
+				if t < tc - runTime then
+					orders[who] = { pos = start, run = true }
+				else
+					orders[who] = { pos = stand + Vector3.new(0, 0, s * 0.8), sprint = true }
+				end
+				if who.ai.jumpId ~= ball.id and tc - t < 0.32 and flatDist(who.root.Position, cp) < 4.5 then
+					who.ai.jumpId = ball.id
+					who.humanoid.Jump = true
+				end
+			else
+				orders[who] = { pos = stand, run = true }
+				-- dive only for a ball he can't reach by running
+				local far = flatDist(who.root.Position, cp)
+				local short = far - (ai.speed + 3) * math.max(tc - t, 0)
+				if who.ai.diveId ~= ball.id and tc - t < 0.35 and tc - t > 0.05 and short > REACH - 1 and far < REACH + 4.5 then
+					who.ai.diveId = ball.id
+					who.diveUntil = t + 0.7
+					who.ai.recoverUntil = t + 1.5
+					local dir = Vector3.new(cp.X - who.root.Position.X, 0, cp.Z - who.root.Position.Z)
+					if dir.Magnitude > 0.1 then
+						who.ai.vel = dir.Unit * 30
+						who.root.AssemblyLinearVelocity = dir.Unit * 30 + Vector3.new(0, 9, 0)
+						faceTowards(who, dir)
+					end
+					act(who, "dive")
+				end
 			end
 			if t >= tc - 0.05 then
 				aiTouch(who, kind, t)
 			end
 		end
 		-- teammates get ready for the next touch
-		local helpers = {}
+		local setter
 		for _, sl in tm.slots do
-			if sl.isAI and sl.root and sl ~= who then
-				table.insert(helpers, sl)
+			if sl ~= who and sl.isAI and sl.root and roleOf(sl) == "S" then
+				setter = sl
 			end
 		end
-		if #helpers > 0 and n == 1 then
+		if n == 1 then
 			local spot = setSpot(team)
-			table.sort(helpers, function(a, b)
-				return flatDist(a.root.Position, spot) < flatDist(b.root.Position, spot)
-			end)
-			orders[helpers[1]] = { pos = Vector3.new(spot.X, GY, spot.Z), run = true }
-		elseif n == 2 then
-			-- the two helpers nearest the net run in to attack; the rest cover
-			table.sort(helpers, function(a, b)
-				return math.abs(a.root.Position.Z - C.Z) < math.abs(b.root.Position.Z - C.Z)
-			end)
-			for i, sl in helpers do
-				if i > 2 then
-					break
+			local runner = setter
+			if not runner then
+				local best = math.huge
+				for _, sl in tm.slots do
+					if sl ~= who and sl.isAI and sl.root and flatDist(sl.root.Position, spot) < best then
+						runner, best = sl, flatDist(sl.root.Position, spot)
+					end
 				end
-				local lx = (sl.root.Position.X - C.X >= 0) and HALF_W * 0.55 or -HALF_W * 0.55
-				orders[sl] = { pos = Vector3.new(C.X + lx, GY, C.Z + s * 10) }
+			end
+			if runner then
+				orders[runner] = { pos = Vector3.new(spot.X, GY, spot.Z), run = true }
+			end
+		end
+		if n <= 2 then
+			-- front-row hitters back off to start their run-ups
+			for _, sl in tm.slots do
+				if sl ~= who and sl.isAI and sl.root and not orders[sl] and isFrontRow(sl) and LANE[roleOf(sl)] then
+					orders[sl] = { pos = approachSpot(sl), run = true }
+				end
 			end
 		end
 	elseif ball.lastTeam == 3 - team and ball.touches == 2 and ball.lastKind == "set" then
-		-- the other team has set up an attack: maybe put up a block
+		-- the other team has set up an attack: block, and shift the defence towards it
 		local tco = heightTime(GY + ATTACK_H)
 		local cpo = tco and ballPos(tco)
 		if cpo and math.abs(cpo.Z - C.Z) < 9 then
 			if brain.blockId ~= ball.id then
 				brain.blockId = ball.id
-				brain.blockGo = rng:NextNumber() < AI.blockTry
+				brain.blockGo = rng:NextNumber() < ai.blockTry
 			end
+			local blockers = {}
 			if brain.blockGo then
-				-- one blocker, or a double block with six players
 				local front = {}
 				for _, sl in tm.slots do
-					if sl.isAI and sl.root and sl.humanoid then
+					if sl.isAI and sl.root and sl.humanoid and isFrontRow(sl) then
 						table.insert(front, sl)
 					end
 				end
 				table.sort(front, function(a, b)
-					return math.abs(a.root.Position.Z - C.Z) < math.abs(b.root.Position.Z - C.Z)
+					return math.abs(a.root.Position.X - cpo.X) < math.abs(b.root.Position.X - cpo.X)
 				end)
 				local count = math.min(#front, TEAM_SIZE >= 6 and 2 or 1)
 				for i = 1, count do
 					local blk = front[i]
+					blockers[blk] = true
 					local bx = cpo.X + (count == 2 and (i == 1 and -1.6 or 1.6) or 0)
 					orders[blk] = { pos = Vector3.new(bx, GY, C.Z + s * 1.6), run = true }
 					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - bx) < 3.5 then
@@ -325,12 +501,18 @@ local function planRally(team, t, brain)
 					end
 				end
 			end
+			local shift = (cpo.X - C.X) * 0.25
+			for _, sl in tm.slots do
+				if sl.isAI and not blockers[sl] then
+					orders[sl] = { pos = homeSpot(sl) + Vector3.new(shift, 0, 0) }
+				end
+			end
 		end
 	end
 	return orders
 end
 
-local function aiTeam(team, t)
+local function aiTeam(team, t, dt)
 	local tm = teams[team]
 	local brain = tm.brain
 	if not brain then
@@ -345,31 +527,86 @@ local function aiTeam(team, t)
 	end
 
 	local orders = {}
+	local serving = servingTeam == team
 	if phase == "serve" then
 		local srv = currentServer()
 		for _, sl in tm.slots do
 			if sl == srv then
 				orders[sl] = { hold = true }
 			else
-				orders[sl] = { pos = homeSpot(sl, servingTeam == team and "serving" or "receive") }
+				orders[sl] = { pos = homeSpot(sl, serving and "serving" or "receive"), walk = true }
 			end
 		end
 	elseif phase == "rally" and ball.mode == "fly" and ball.live then
 		if brain.seenId ~= ball.id then
-			brain.seenId, brain.seenAt = ball.id, t
+			brain.seenId, brain.seenAt, brain.lag = ball.id, t, rng:NextNumber(0, 0.08)
 		end
-		if t - brain.seenAt < AI.react then
+		if t - brain.seenAt < tm.ai.react + brain.lag then
 			orders = brain.orders or orders -- still reacting: carry on as before
 		else
 			orders = planRally(team, t, brain)
+		end
+	else
+		-- between points: walk back; the next server heads for the end line
+		local nextServer = (phase == "point" and serving) and currentServer() or nil
+		for _, sl in tm.slots do
+			if sl == nextServer then
+				orders[sl] = { pos = serveSpot(sl), run = true }
+			else
+				orders[sl] = { pos = homeSpot(sl, serving and "serving" or "receive"), walk = true }
+			end
 		end
 	end
 	brain.orders = orders
 	for _, sl in tm.slots do
 		if sl.isAI and sl.humanoid and sl.root then
-			moveSlot(sl, orders[sl] or { pos = homeSpot(sl) }, t, lookAt)
+			steer(sl, orders[sl] or { pos = homeSpot(sl) }, t, dt, lookAt)
 			animateBot(sl)
 		end
+	end
+end
+
+---------------------------------------------------------------- starting and joining from the menu
+
+local function beginMatch(plr, data)
+	local count = #Teams.list
+	local home = math.clamp(math.floor(tonumber(data.home) or 1), 1, count)
+	local away = math.clamp(math.floor(tonumber(data.away) or 2), 1, count)
+	if away == home then
+		away = home % count + 1
+	end
+	local lineup = Teams.validLineup(data.lineup) and data.lineup or Teams.defaultLineup()
+	local points = tonumber(data.points)
+	pointsToWin = (points == 15 or points == 21 or points == 25) and points or Config.POINTS_TO_WIN
+	local sets = tonumber(data.sets)
+	setsToWin = (sets == 1 or sets == 2 or sets == 3) and sets or Config.SETS_TO_WIN
+
+	configureTeams(home, away, lineup, nil)
+	matchActive = true
+	phase = "setup"
+	addPlayer(plr, 1, math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE))
+
+	-- AI bodies for everyone else, built together
+	local building = 0
+	for t = 1, 2 do
+		for _, sl in teams[t].slots do
+			if sl.isAI then
+				clearBody(sl)
+				building += 1
+				task.spawn(function()
+					makeBot(sl)
+					building -= 1
+				end)
+			end
+		end
+	end
+	sendState()
+	local waited = 0
+	while building > 0 and waited < 12 do
+		waited += task.wait(0.1)
+	end
+	if matchActive then
+		startMatch()
 	end
 end
 
@@ -381,8 +618,28 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		sendBall(plr)
 		return
 	end
+	if type(data) ~= "table" then
+		return
+	end
+	if action == "start" then
+		if not slotOfPlayer[plr] then
+			if matchActive then
+				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot))
+			else
+				beginMatch(plr, data)
+			end
+		end
+		return
+	elseif action == "leave" then
+		if slotOfPlayer[plr] then
+			removePlayer(plr)
+			moveOffCourt(plr)
+		end
+		return
+	end
+
 	local slot = slotOfPlayer[plr]
-	if not slot or not slot.root or not slot.humanoid or type(data) ~= "table" then
+	if not matchActive or not slot or not slot.root or not slot.humanoid then
 		return
 	end
 	local t = now()
@@ -397,6 +654,11 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		if phase == "serve" and currentServer() == slot and ball.mode == "hold" then
 			local fallback = floorPoint(3 - slot.team, 0, HALF_L * 0.5)
 			doServe(slot, aim or fallback, tonumber(data.power) or 0.5, air, rootPos)
+		end
+	elseif action == "prep" then
+		if phase == "serve" and currentServer() == slot and t - (slot.lastPrep or 0) > 1 then
+			slot.lastPrep = t
+			act(slot, "serveprep")
 		end
 	elseif action == "hit" then
 		if phase ~= "rally" or not ball.live or ball.mode ~= "fly" then
@@ -431,57 +693,21 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		touch(slot, kind, bp, ht, aim, q)
 	elseif action == "dive" then
-		slot.diveUntil = t + 0.7
-	end
-end)
-
--- From the main menu: play (with match settings) or go back to the menu
-local function anyPeople()
-	for t = 1, 2 do
-		for _, s in teams[t].slots do
-			if s.player then
-				return true
-			end
-		end
-	end
-	return false
-end
-
-remote.OnServerEvent:Connect(function(plr, action, data)
-	if action == "join" and not slotOfPlayer[plr] then
-		local first = not anyPeople()
-		addPlayer(plr)
-		if first and slotOfPlayer[plr] and type(data) == "table" then
-			-- the first person in picks the difficulty and the target score
-			local lvl = tonumber(data.level)
-			if lvl and AI_LEVELS[math.floor(lvl)] then
-				LEVEL = math.floor(lvl)
-				AI = AI_LEVELS[LEVEL]
-			end
-			local pts = tonumber(data.points)
-			if pts == 15 or pts == 21 or pts == 25 then
-				pointsToWin = pts
-			end
-			startMatch()
-		end
-		sendState()
-	elseif action == "leave" and slotOfPlayer[plr] then
-		removePlayer(plr)
-		local char = plr.Character
-		if char and char.PrimaryPart then
-			-- off the court, by the sideline
-			local spot = Vector3.new(C.X + HALF_W + 24, GY + 4, C.Z)
-			char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, C.Z)))
+		if t - (slot.lastDive or 0) > 1 then
+			slot.lastDive = t
+			slot.diveUntil = t + 0.7
+			-- if your screen played your dive emote, others see that instead of the built-in dive
+			act(slot, data.custom == true and "divecustom" or "dive")
 		end
 	end
 end)
 
 ---------------------------------------------------------------- start
 
--- people join from the main menu; until then they watch
+-- nobody plays until they start a match from the menu
 Players.PlayerRemoving:Connect(removePlayer)
 
--- controls and HUD for everyone
+-- controls, menus and HUD for everyone
 local function giveClient(plr)
 	local holder = Instance.new("ScreenGui")
 	holder.Name = "ArenaVolleyballLoader"
@@ -494,34 +720,36 @@ for _, plr in Players:GetPlayers() do
 	task.spawn(giveClient, plr)
 end
 
--- AI bodies for every empty spot, built at the same time
-local building = 0
-for t = 1, 2 do
-	for _, sl in teams[t].slots do
-		if sl.isAI and not sl.model then
-			building += 1
-			task.spawn(function()
-				makeBot(sl)
-				building -= 1
-			end)
+-- a plain body the menus dress in team kits
+task.spawn(function()
+	local desc = Instance.new("HumanoidDescription")
+	desc.HeadColor, desc.LeftArmColor, desc.RightArmColor = SKIN[3], SKIN[3], SKIN[3]
+	local ok, model = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R15)
+	if ok and model then
+		model.Name = "MenuModel"
+		local animate = model:FindFirstChild("Animate")
+		if animate then
+			animate:Destroy()
 		end
+		model.Parent = shared
 	end
-end
-local waited = 0
-while building > 0 and waited < 10 do
-	waited += task.wait(0.1)
-end
+end)
 
-startMatch()
-
+ball.mode = "hidden"
 local lastError = 0
-RunService.Heartbeat:Connect(function()
+RunService.Heartbeat:Connect(function(dt)
+	if not matchActive then
+		return
+	end
 	local ok, err = pcall(function()
 		local t = now()
 		stepBall(t)
 		updateMatch(t)
-		aiTeam(1, t)
-		aiTeam(2, t)
+		-- take turns going first, and apply AI touches once both teams have decided
+		local first = (math.floor(t * 60) % 2) + 1
+		aiTeam(first, t, dt)
+		aiTeam(3 - first, t, dt)
+		flushTouches()
 	end)
 	if not ok and os.clock() - lastError > 3 then
 		lastError = os.clock()
@@ -529,4 +757,4 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
-print("[Arena Volleyball] Ready. Change the rules in ArenaVolleyball > Config.")
+print("[Arena Volleyball] Ready. Start a match from the menu.")
