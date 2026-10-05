@@ -11,9 +11,26 @@ for t = 1, 2 do
 end
 local slotOfPlayer = {}
 
+-- Rotation position 1-6 (1 = back right, the server; 2 front right ... 6 back middle).
+-- Players move round one place each time their team wins the serve back.
+local function rotationPos(slot)
+	return (slot.index - teams[slot.team].serveIndex) % 6 + 1
+end
+
+-- Six-a-side spots: {across, as a share of half the width (+ = the team's right), distance from the net}
+local SIX = {
+	receive = { { 0.6, 0.72 }, { 0.65, 0.3 }, { 0, 0.2 }, { -0.65, 0.3 }, { -0.6, 0.72 }, { 0, 0.82 } },
+	defend = { { 0.6, 0.7 }, { 0.55, 0.08 }, { 0, 0.08 }, { -0.55, 0.08 }, { -0.6, 0.7 }, { 0, 0.8 } },
+}
+
 -- Where a player stands while waiting. lz is the distance from the net.
 local function homeSpot(slot, mode)
 	local s = side(slot.team)
+	if TEAM_SIZE == 6 then
+		local spot = SIX[mode == "receive" and "receive" or "defend"][rotationPos(slot)]
+		-- facing the net, a team's right is +X for HOME and -X for AWAY
+		return Vector3.new(C.X + s * spot[1] * HALF_W, GY, C.Z + s * math.max(spot[2] * HALF_L, 2.5))
+	end
 	local x = 0
 	if TEAM_SIZE > 1 then
 		x = (-1 + 2 * (slot.index - 1) / (TEAM_SIZE - 1)) * HALF_W * 0.5

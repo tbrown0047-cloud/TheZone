@@ -46,8 +46,9 @@ Random = {
 	end,
 }
 
-Config = { TEAM_NAMES = { "HOME", "AWAY" }, POINTS_TO_WIN = 15, WIN_BY = 2, SETS_TO_WIN = 1 }
-TEAM_SIZE, HALF_L, HALF_W, NET_H, G, R, REACH = 2, 27, 13.5, 7.5, 48, 0.8, 6.5
+Config = { TEAM_NAMES = { "HOME", "AWAY" }, POINTS_TO_WIN = 25, WIN_BY = 2, SETS_TO_WIN = 1 }
+TEAM_SIZE, HALF_L, HALF_W, NET_H, G, R, REACH = 6, 32, 16, 8.7, 35, 0.42, 6.5
+ATTACK_H = NET_H + 2
 AI = { spike = 66, blockWin = 0.55 }
 rng = Random.new()
 CLOCK = 0
@@ -69,7 +70,7 @@ function standHeight() return GY + 3 end
 teams = {}
 for t = 1, 2 do
 	teams[t] = { slots = {}, score = 0, sets = 0, serveIndex = 1 }
-	for i = 1, 2 do
+	for i = 1, TEAM_SIZE do
 		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {}, root = nil }
 	end
 end

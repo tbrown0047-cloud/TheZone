@@ -71,12 +71,12 @@ local th = heightTime(spot.Y)
 print(string.format("  set peaks %.1f above floor, comes down through the attack spot %.1f studs off, %.2fs after the set", ball.p0.Y + ball.v0.Y ^ 2 / (2 * G) - GY, flatDist(ballPos(th), spot), th - ball.t0))
 runUntilRest(CLOCK + 10)
 
-print("== AWAY spikes (attack spot is 3.5 studs from the net, contact 9.5 high)")
+print("== AWAY spikes (attack spot is 3.5 studs from the net, contact at attack height)")
 for _, case in { { 3.5, 20, 0 }, { 3.5, 6, 8 }, { 3.5, 26, -12 }, { 10, 20, 0 }, { 14, 22, 5 } } do
 	reset(2, 2, "set")
 	local attacker = teams[2].slots[2]
 	attacker.isAI = false
-	local bp = Vector3.new(C.X + 6, GY + 9.5, C.Z - case[1])
+	local bp = Vector3.new(C.X + 6, GY + ATTACK_H, C.Z - case[1])
 	touch(attacker, "spike", bp, CLOCK, floorPoint(1, case[3], case[2]), 1)
 	local clear = netClearance()
 	local speed = ball.v0.Magnitude
@@ -89,8 +89,8 @@ reset(2, 2, "set")
 local blocker = teams[1].slots[1]
 blocker.isAI = false
 blocker.humanoid = {}
-blocker.root = { Position = Vector3.new(C.X + 6, GY + 7.5, C.Z + 1.6) }
-touch(teams[2].slots[2], "spike", Vector3.new(C.X + 6, GY + 10.5, C.Z - 3), CLOCK, floorPoint(1, 6, 18), 1)
+blocker.root = { Position = Vector3.new(C.X + 6, GY + 8, C.Z + 1.6) }
+touch(teams[2].slots[2], "spike", Vector3.new(C.X + 6, GY + ATTACK_H + 1, C.Z - 3), CLOCK, floorPoint(1, 6, 18), 1)
 runUntilRest(CLOCK + 10)
 local blocked = false
 for _, e in EVENTS do
@@ -119,12 +119,12 @@ launch(Vector3.new(C.X, GY + 4, C.Z - 6), Vector3.new(0, 2, 30), CLOCK)
 runUntilRest(CLOCK + 10)
 print("  into the net, drops on AWAY's side: " .. lastBanner())
 
-print("== deep serves (aim 24 of 27 deep)")
+print("== deep serves (aim 29 of 32 deep)")
 for _, pw in { 0.7, 0.85, 0.95, 1 } do
 	reset(0, 0, nil)
 	ball.mode = "hold"
 	ball.live = false
-	doServe(teams[1].slots[1], floorPoint(2, 4, 24), pw, false, Vector3.new(C.X, GY + 3, C.Z + HALF_L + 3))
+	doServe(teams[1].slots[1], floorPoint(2, 4, 29), pw, false, Vector3.new(C.X, GY + 3, C.Z + HALF_L + 3))
 	runUntilRest(CLOCK + 10)
 	print(string.format("  power %.2f -> %s", pw, lastBanner()))
 end

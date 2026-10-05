@@ -16,13 +16,14 @@ if ReplicatedStorage:FindFirstChild("ArenaVolleyball") then
 	return
 end
 
-local TEAM_SIZE = math.clamp(math.floor(Config.TEAM_SIZE or 2), 1, 4)
+local TEAM_SIZE = math.clamp(math.floor(Config.TEAM_SIZE or 6), 1, 6)
 local HALF_L = Config.COURT_LENGTH / 2
 local HALF_W = Config.COURT_WIDTH / 2
 local NET_H = Config.NET_HEIGHT
 local G = Config.GRAVITY
 local R = Config.BALL_RADIUS
 local REACH = Config.REACH
+local ATTACK_H = NET_H + 2 -- height a spike is hit at
 local LEVEL = math.clamp(math.floor(Config.AI_LEVEL or 2), 1, 3)
 
 -- How each AI level plays
@@ -90,7 +91,7 @@ end
 -- floor: blue free zone around an orange court
 part({
 	Name = "FreeZone",
-	Size = Vector3.new(Config.COURT_WIDTH + 26, 0.4, Config.COURT_LENGTH + 26),
+	Size = Vector3.new(Config.COURT_WIDTH + 36, 0.4, Config.COURT_LENGTH + 46), -- 5 m at the sides, 6.5 m at the ends
 	CFrame = CFrame.new(C.X, groundY + 0.2, C.Z),
 	Color = Color3.fromRGB(34, 74, 128),
 })
@@ -129,14 +130,14 @@ for _, sx in { -1, 1 } do
 	part({
 		Name = "Post",
 		Size = Vector3.new(0.6, NET_H + 1.5, 0.6),
-		CFrame = CFrame.new(C.X + sx * (HALF_W + 2.5), GY + (NET_H + 1.5) / 2, C.Z),
+		CFrame = CFrame.new(C.X + sx * (HALF_W + 3.6), GY + (NET_H + 1.5) / 2, C.Z),
 		Color = Color3.fromRGB(60, 64, 72),
 		Material = Enum.Material.Metal,
 	})
 	part({
 		Name = "Antenna",
-		Size = Vector3.new(0.18, 5.6, 0.18),
-		CFrame = CFrame.new(C.X + sx * HALF_W, GY + NET_H - 0.2, C.Z),
+		Size = Vector3.new(0.18, 6.5, 0.18), -- 1.8 m, 0.8 m above the tape
+		CFrame = CFrame.new(C.X + sx * HALF_W, GY + NET_H - 0.35, C.Z),
 		Color = Color3.fromRGB(230, 60, 60),
 		CanCollide = false,
 		CastShadow = false,
@@ -144,8 +145,8 @@ for _, sx in { -1, 1 } do
 end
 part({
 	Name = "Net",
-	Size = Vector3.new(Config.COURT_WIDTH + 5, 3, 0.12),
-	CFrame = CFrame.new(C.X, GY + NET_H - 1.7, C.Z),
+	Size = Vector3.new(Config.COURT_WIDTH + 6.5, 3.6, 0.12), -- 1 m tall mesh
+	CFrame = CFrame.new(C.X, GY + NET_H - 2, C.Z),
 	Color = Color3.fromRGB(235, 235, 235),
 	Material = Enum.Material.Fabric,
 	Transparency = 0.55,
@@ -153,7 +154,7 @@ part({
 })
 part({
 	Name = "NetBand",
-	Size = Vector3.new(Config.COURT_WIDTH + 5, 0.4, 0.18),
+	Size = Vector3.new(Config.COURT_WIDTH + 6.5, 0.4, 0.18),
 	CFrame = CFrame.new(C.X, GY + NET_H - 0.2, C.Z),
 	Color = Color3.fromRGB(250, 250, 250),
 	CastShadow = false,

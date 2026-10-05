@@ -91,6 +91,14 @@ local marker = worldPart({
 	Transparency = 1,
 })
 
+local aimMarker = worldPart({
+	Name = "AimMarker",
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(0.03, 1.6, 1.6),
+	Material = Enum.Material.Neon,
+	Transparency = 1,
+})
+
 local reachGlow = Instance.new("Highlight")
 reachGlow.Adornee = ballPart
 reachGlow.FillTransparency = 1

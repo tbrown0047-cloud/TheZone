@@ -216,10 +216,10 @@ local function planRally(team, t, brain)
 			if n == 2 then
 				kind, h = "set", GY + 6.2
 			elseif n == 3 then
-				kind, h = "spike", GY + 9.5
+				kind, h = "spike", GY + ATTACK_H
 			end
 			local tc = heightTime(h)
-			if kind == "spike" and (not tc or (ballPos(tc).Z - C.Z) * s > 12) then
+			if kind == "spike" and (not tc or (ballPos(tc).Z - C.Z) * s > 14) then
 				kind, h = "bump", GY + 3 -- too low or too deep to attack: free ball
 				tc = heightTime(h)
 			elseif kind == "set" and not tc then
@@ -274,14 +274,21 @@ local function planRally(team, t, brain)
 			end)
 			orders[helpers[1]] = { pos = Vector3.new(spot.X, GY, spot.Z), run = true }
 		elseif n == 2 then
-			for _, sl in helpers do
-				local lx = (sl.root.Position.X - C.X >= 0) and 6 or -6
+			-- the two helpers nearest the net run in to attack; the rest cover
+			table.sort(helpers, function(a, b)
+				return math.abs(a.root.Position.Z - C.Z) < math.abs(b.root.Position.Z - C.Z)
+			end)
+			for i, sl in helpers do
+				if i > 2 then
+					break
+				end
+				local lx = (sl.root.Position.X - C.X >= 0) and HALF_W * 0.55 or -HALF_W * 0.55
 				orders[sl] = { pos = Vector3.new(C.X + lx, GY, C.Z + s * 10) }
 			end
 		end
 	elseif ball.lastTeam == 3 - team and ball.touches == 2 and ball.lastKind == "set" then
 		-- the other team has set up an attack: maybe put up a block
-		local tco = heightTime(GY + 9.5)
+		local tco = heightTime(GY + ATTACK_H)
 		local cpo = tco and ballPos(tco)
 		if cpo and math.abs(cpo.Z - C.Z) < 9 then
 			if brain.blockId ~= ball.id then
@@ -289,18 +296,22 @@ local function planRally(team, t, brain)
 				brain.blockGo = rng:NextNumber() < AI.blockTry
 			end
 			if brain.blockGo then
-				local blk, bestZ = nil, math.huge
+				-- one blocker, or a double block with six players
+				local front = {}
 				for _, sl in tm.slots do
 					if sl.isAI and sl.root and sl.humanoid then
-						local z = math.abs(sl.root.Position.Z - C.Z)
-						if z < bestZ then
-							blk, bestZ = sl, z
-						end
+						table.insert(front, sl)
 					end
 				end
-				if blk then
-					orders[blk] = { pos = Vector3.new(cpo.X, GY, C.Z + s * 1.6), run = true }
-					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - cpo.X) < 3.5 then
+				table.sort(front, function(a, b)
+					return math.abs(a.root.Position.Z - C.Z) < math.abs(b.root.Position.Z - C.Z)
+				end)
+				local count = math.min(#front, TEAM_SIZE >= 6 and 2 or 1)
+				for i = 1, count do
+					local blk = front[i]
+					local bx = cpo.X + (count == 2 and (i == 1 and -1.6 or 1.6) or 0)
+					orders[blk] = { pos = Vector3.new(bx, GY, C.Z + s * 1.6), run = true }
+					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - bx) < 3.5 then
 						blk.ai.jumpId = ball.id
 						blk.humanoid.Jump = true
 					end
@@ -387,11 +398,13 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 			return
 		end
 		local kind = data.kind
-		if kind ~= "bump" and kind ~= "set" and kind ~= "spike" then
+		if kind ~= "bump" and kind ~= "set" and kind ~= "spike" and kind ~= "tip" then
 			return
 		end
 		if kind == "spike" and not air then
 			kind = "bump"
+		elseif kind == "tip" and not air then
+			kind = "set"
 		end
 		-- judge the touch at the moment the player clicked (up to 0.3 s ago)
 		local ht = t
@@ -400,7 +413,7 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		local bp = ballPos(ht)
 		local ok, q = reachCheck(slot, kind, rootPos, bp, air, ht)
-		if not ok and kind == "spike" then
+		if not ok and (kind == "spike" or kind == "tip") then
 			kind = "set"
 			ok, q = reachCheck(slot, kind, rootPos, bp, air, ht)
 		end

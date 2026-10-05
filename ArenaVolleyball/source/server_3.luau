@@ -159,14 +159,15 @@ local function partnerOf(slot)
 end
 
 local function attackSpot(team, attacker)
-	local lx = 6
+	local wing = HALF_W * 0.55
+	local lx = wing
 	if attacker and attacker.root then
 		lx = math.clamp(attacker.root.Position.X - C.X, -HALF_W + 3, HALF_W - 3)
 		if attacker.isAI then
-			lx = (lx >= 0 and 1 or -1) * 6
+			lx = (lx >= 0 and 1 or -1) * wing
 		end
 	end
-	return floorPoint(team, lx, 3.5) + Vector3.new(0, 9.5 - R, 0)
+	return floorPoint(team, lx, 3.5) + Vector3.new(0, ATTACK_H - R, 0)
 end
 
 -- Keeps an aim point on the other half, at most `margin` studs past the lines

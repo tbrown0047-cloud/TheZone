@@ -127,11 +127,11 @@ local function hintText()
 	end
 	if state.phase == "rally" then
 		if lastInput == "touch" then
-			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  <b>DIVE</b> to reach"
+			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  jump + <b>SET</b> tip  ·  <b>DIVE</b>"
 		elseif lastInput == "pad" then
-			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>B</b> dive"
+			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>A</b> then <b>X</b> tip  ·  <b>B</b> dive"
 		end
-		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike  ·  <b>Q</b> dive  ·  aim with the mouse"
+		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike or <b>E</b> tip  ·  <b>Q</b> dive  ·  aim with the mouse"
 	end
 	if state.phase == "serve" then
 		return NAMES[state.serving] .. " to serve"
@@ -193,24 +193,40 @@ local function aimPoint()
 	return Vector3.new(o.X, GY, o.Z) + flat.Unit * 40
 end
 
+-- Same windows the server uses: can you play this touch right now?
+local WINDOWS = { bump = { -3.5, 5 }, set = { -2, 7 }, spike = { -2.5, 8 }, tip = { -2.5, 8 } }
+local function canPlay(kind, hum, hrp)
+	if not hrp or state.phase ~= "rally" or ballState.mode ~= "fly" then
+		return false
+	end
+	local team = myTeam()
+	local pos = ballAt(serverNow())
+	if team == 0 or (pos.Z - C.Z) * (team == 1 and 1 or -1) < -1.5 then
+		return false
+	end
+	local off = pos - hrp.Position
+	local win = WINDOWS[kind]
+	return Vector3.new(off.X, 0, off.Z).Magnitude <= REACH + 1.2 and off.Y > win[1] and off.Y < win[2]
+end
+
+local pending = nil -- a press made slightly early, played as soon as the ball arrives
+
 local function sendHit(kind)
+	local hum, hrp = character()
+	local air = airborne(hum) and os.clock() > diveUntil
+	if not air and (kind == "spike" or kind == "tip") then
+		kind = (kind == "spike") and "bump" or "set"
+	end
 	if os.clock() - lastSend < 0.3 then
 		return
 	end
-	local hum, hrp = character()
-	if not hrp or state.phase ~= "rally" or ballState.mode ~= "fly" then
+	if not canPlay(kind, hum, hrp) then
+		pending = { kind = kind, expires = os.clock() + 0.3 }
 		return
 	end
-	local t = serverNow()
-	local bp = ballAt(t)
-	if Vector3.new(bp.X - hrp.Position.X, 0, bp.Z - hrp.Position.Z).Magnitude > REACH + 5 then
-		return
-	end
+	pending = nil
 	lastSend = os.clock()
-	local air = airborne(hum) and os.clock() > diveUntil
-	if kind == "spike" and not air then
-		kind = "bump"
-	end
+	local t = serverNow()
 	remote:FireServer("hit", { kind = kind, aim = aimPoint(), root = hrp.Position, air = air, id = ballState.id, t = t })
 end
 
@@ -222,12 +238,7 @@ local function press()
 		end
 		return
 	end
-	local hum = character()
-	if airborne(hum) and os.clock() > diveUntil then
-		sendHit("spike")
-	else
-		sendHit("bump")
-	end
+	sendHit("spike") -- in the air this spikes; on the ground it becomes a pass
 end
 
 local function release()
@@ -244,7 +255,7 @@ end
 
 local function setBall()
 	if not myServe() then
-		sendHit("set")
+		sendHit("tip") -- in the air this tips over the block; on the ground it sets
 	end
 end
 
@@ -290,7 +301,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		press()
 	elseif key == Enum.KeyCode.E or key == Enum.KeyCode.ButtonX then
 		setBall()
-	elseif key == Enum.KeyCode.Q or key == Enum.KeyCode.ButtonB then
+	elseif key == Enum.KeyCode.Q or key == Enum.KeyCode.C or key == Enum.KeyCode.ButtonB then
 		dive()
 	end
 end)
@@ -345,9 +356,9 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		flash("MISSED", DIM)
 	elseif kind == "cue" then
 		local keys = {
-			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK", over = "CLICK" },
-			pad = { bump = "R2", set = "X", spike = "A + R2", over = "R2" },
-			touch = { bump = "HIT", set = "SET", spike = "JUMP + HIT", over = "HIT" },
+			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK  (E to tip)", over = "CLICK" },
+			pad = { bump = "R2", set = "X", spike = "A + R2  (X to tip)", over = "R2" },
+			touch = { bump = "HIT", set = "SET", spike = "JUMP + HIT  (SET to tip)", over = "HIT" },
 		}
 		local words = { bump = "PASS", set = "SET", spike = "SPIKE", over = "SEND IT OVER" }
 		local key = (keys[lastInput] or keys.kbm)[a] or ""
@@ -404,6 +415,30 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 	end
 	reachGlow.Enabled = glow
+
+	-- play a slightly early press the moment the ball arrives
+	if pending then
+		local hum, hrp = character()
+		if os.clock() > pending.expires or not live then
+			pending = nil
+		elseif canPlay(pending.kind, hum, hrp) then
+			local kind = pending.kind
+			pending = nil
+			lastSend = 0
+			sendHit(kind)
+		end
+	end
+
+	-- where your serve or spike will go
+	local aiming = (charging and myServe()) or (live and team ~= 0 and airborne((character())))
+	if aiming then
+		local aim = aimPoint()
+		aimMarker.CFrame = CFrame.new(aim.X, GY + 0.05, aim.Z) * FLAT
+		aimMarker.Color = COLORS[team] or Color3.new(1, 1, 1)
+		aimMarker.Transparency = 0.45
+	else
+		aimMarker.Transparency = 1
+	end
 
 	local cueOn = live and t < cueUntil
 	cue.TextTransparency = cueOn and 0.05 or 1

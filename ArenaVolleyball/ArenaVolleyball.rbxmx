@@ -24,13 +24,14 @@ if ReplicatedStorage:FindFirstChild("ArenaVolleyball") then
 	return
 end
 
-local TEAM_SIZE = math.clamp(math.floor(Config.TEAM_SIZE or 2), 1, 4)
+local TEAM_SIZE = math.clamp(math.floor(Config.TEAM_SIZE or 6), 1, 6)
 local HALF_L = Config.COURT_LENGTH / 2
 local HALF_W = Config.COURT_WIDTH / 2
 local NET_H = Config.NET_HEIGHT
 local G = Config.GRAVITY
 local R = Config.BALL_RADIUS
 local REACH = Config.REACH
+local ATTACK_H = NET_H + 2 -- height a spike is hit at
 local LEVEL = math.clamp(math.floor(Config.AI_LEVEL or 2), 1, 3)
 
 -- How each AI level plays
@@ -98,7 +99,7 @@ end
 -- floor: blue free zone around an orange court
 part({
 	Name = "FreeZone",
-	Size = Vector3.new(Config.COURT_WIDTH + 26, 0.4, Config.COURT_LENGTH + 26),
+	Size = Vector3.new(Config.COURT_WIDTH + 36, 0.4, Config.COURT_LENGTH + 46), -- 5 m at the sides, 6.5 m at the ends
 	CFrame = CFrame.new(C.X, groundY + 0.2, C.Z),
 	Color = Color3.fromRGB(34, 74, 128),
 })
@@ -137,14 +138,14 @@ for _, sx in { -1, 1 } do
 	part({
 		Name = "Post",
 		Size = Vector3.new(0.6, NET_H + 1.5, 0.6),
-		CFrame = CFrame.new(C.X + sx * (HALF_W + 2.5), GY + (NET_H + 1.5) / 2, C.Z),
+		CFrame = CFrame.new(C.X + sx * (HALF_W + 3.6), GY + (NET_H + 1.5) / 2, C.Z),
 		Color = Color3.fromRGB(60, 64, 72),
 		Material = Enum.Material.Metal,
 	})
 	part({
 		Name = "Antenna",
-		Size = Vector3.new(0.18, 5.6, 0.18),
-		CFrame = CFrame.new(C.X + sx * HALF_W, GY + NET_H - 0.2, C.Z),
+		Size = Vector3.new(0.18, 6.5, 0.18), -- 1.8 m, 0.8 m above the tape
+		CFrame = CFrame.new(C.X + sx * HALF_W, GY + NET_H - 0.35, C.Z),
 		Color = Color3.fromRGB(230, 60, 60),
 		CanCollide = false,
 		CastShadow = false,
@@ -152,8 +153,8 @@ for _, sx in { -1, 1 } do
 end
 part({
 	Name = "Net",
-	Size = Vector3.new(Config.COURT_WIDTH + 5, 3, 0.12),
-	CFrame = CFrame.new(C.X, GY + NET_H - 1.7, C.Z),
+	Size = Vector3.new(Config.COURT_WIDTH + 6.5, 3.6, 0.12), -- 1 m tall mesh
+	CFrame = CFrame.new(C.X, GY + NET_H - 2, C.Z),
 	Color = Color3.fromRGB(235, 235, 235),
 	Material = Enum.Material.Fabric,
 	Transparency = 0.55,
@@ -161,7 +162,7 @@ part({
 })
 part({
 	Name = "NetBand",
-	Size = Vector3.new(Config.COURT_WIDTH + 5, 0.4, 0.18),
+	Size = Vector3.new(Config.COURT_WIDTH + 6.5, 0.4, 0.18),
 	CFrame = CFrame.new(C.X, GY + NET_H - 0.2, C.Z),
 	Color = Color3.fromRGB(250, 250, 250),
 	CastShadow = false,
@@ -200,9 +201,26 @@ for t = 1, 2 do
 end
 local slotOfPlayer = {}
 
+-- Rotation position 1-6 (1 = back right, the server; 2 front right ... 6 back middle).
+-- Players move round one place each time their team wins the serve back.
+local function rotationPos(slot)
+	return (slot.index - teams[slot.team].serveIndex) % 6 + 1
+end
+
+-- Six-a-side spots: {across, as a share of half the width (+ = the team's right), distance from the net}
+local SIX = {
+	receive = { { 0.6, 0.72 }, { 0.65, 0.3 }, { 0, 0.2 }, { -0.65, 0.3 }, { -0.6, 0.72 }, { 0, 0.82 } },
+	defend = { { 0.6, 0.7 }, { 0.55, 0.08 }, { 0, 0.08 }, { -0.55, 0.08 }, { -0.6, 0.7 }, { 0, 0.8 } },
+}
+
 -- Where a player stands while waiting. lz is the distance from the net.
 local function homeSpot(slot, mode)
 	local s = side(slot.team)
+	if TEAM_SIZE == 6 then
+		local spot = SIX[mode == "receive" and "receive" or "defend"][rotationPos(slot)]
+		-- facing the net, a team's right is +X for HOME and -X for AWAY
+		return Vector3.new(C.X + s * spot[1] * HALF_W, GY, C.Z + s * math.max(spot[2] * HALF_L, 2.5))
+	end
 	local x = 0
 	if TEAM_SIZE > 1 then
 		x = (-1 + 2 * (slot.index - 1) / (TEAM_SIZE - 1)) * HALF_W * 0.5
@@ -618,14 +636,15 @@ local function partnerOf(slot)
 end
 
 local function attackSpot(team, attacker)
-	local lx = 6
+	local wing = HALF_W * 0.55
+	local lx = wing
 	if attacker and attacker.root then
 		lx = math.clamp(attacker.root.Position.X - C.X, -HALF_W + 3, HALF_W - 3)
 		if attacker.isAI then
-			lx = (lx >= 0 and 1 or -1) * 6
+			lx = (lx >= 0 and 1 or -1) * wing
 		end
 	end
-	return floorPoint(team, lx, 3.5) + Vector3.new(0, 9.5 - R, 0)
+	return floorPoint(team, lx, 3.5) + Vector3.new(0, ATTACK_H - R, 0)
 end
 
 -- Keeps an aim point on the other half, at most `margin` studs past the lines
@@ -1167,10 +1186,10 @@ local function planRally(team, t, brain)
 			if n == 2 then
 				kind, h = "set", GY + 6.2
 			elseif n == 3 then
-				kind, h = "spike", GY + 9.5
+				kind, h = "spike", GY + ATTACK_H
 			end
 			local tc = heightTime(h)
-			if kind == "spike" and (not tc or (ballPos(tc).Z - C.Z) * s > 12) then
+			if kind == "spike" and (not tc or (ballPos(tc).Z - C.Z) * s > 14) then
 				kind, h = "bump", GY + 3 -- too low or too deep to attack: free ball
 				tc = heightTime(h)
 			elseif kind == "set" and not tc then
@@ -1225,14 +1244,21 @@ local function planRally(team, t, brain)
 			end)
 			orders[helpers[1]] = { pos = Vector3.new(spot.X, GY, spot.Z), run = true }
 		elseif n == 2 then
-			for _, sl in helpers do
-				local lx = (sl.root.Position.X - C.X >= 0) and 6 or -6
+			-- the two helpers nearest the net run in to attack; the rest cover
+			table.sort(helpers, function(a, b)
+				return math.abs(a.root.Position.Z - C.Z) < math.abs(b.root.Position.Z - C.Z)
+			end)
+			for i, sl in helpers do
+				if i > 2 then
+					break
+				end
+				local lx = (sl.root.Position.X - C.X >= 0) and HALF_W * 0.55 or -HALF_W * 0.55
 				orders[sl] = { pos = Vector3.new(C.X + lx, GY, C.Z + s * 10) }
 			end
 		end
 	elseif ball.lastTeam == 3 - team and ball.touches == 2 and ball.lastKind == "set" then
 		-- the other team has set up an attack: maybe put up a block
-		local tco = heightTime(GY + 9.5)
+		local tco = heightTime(GY + ATTACK_H)
 		local cpo = tco and ballPos(tco)
 		if cpo and math.abs(cpo.Z - C.Z) < 9 then
 			if brain.blockId ~= ball.id then
@@ -1240,18 +1266,22 @@ local function planRally(team, t, brain)
 				brain.blockGo = rng:NextNumber() < AI.blockTry
 			end
 			if brain.blockGo then
-				local blk, bestZ = nil, math.huge
+				-- one blocker, or a double block with six players
+				local front = {}
 				for _, sl in tm.slots do
 					if sl.isAI and sl.root and sl.humanoid then
-						local z = math.abs(sl.root.Position.Z - C.Z)
-						if z < bestZ then
-							blk, bestZ = sl, z
-						end
+						table.insert(front, sl)
 					end
 				end
-				if blk then
-					orders[blk] = { pos = Vector3.new(cpo.X, GY, C.Z + s * 1.6), run = true }
-					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - cpo.X) < 3.5 then
+				table.sort(front, function(a, b)
+					return math.abs(a.root.Position.Z - C.Z) < math.abs(b.root.Position.Z - C.Z)
+				end)
+				local count = math.min(#front, TEAM_SIZE >= 6 and 2 or 1)
+				for i = 1, count do
+					local blk = front[i]
+					local bx = cpo.X + (count == 2 and (i == 1 and -1.6 or 1.6) or 0)
+					orders[blk] = { pos = Vector3.new(bx, GY, C.Z + s * 1.6), run = true }
+					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - bx) < 3.5 then
 						blk.ai.jumpId = ball.id
 						blk.humanoid.Jump = true
 					end
@@ -1338,11 +1368,13 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 			return
 		end
 		local kind = data.kind
-		if kind ~= "bump" and kind ~= "set" and kind ~= "spike" then
+		if kind ~= "bump" and kind ~= "set" and kind ~= "spike" and kind ~= "tip" then
 			return
 		end
 		if kind == "spike" and not air then
 			kind = "bump"
+		elseif kind == "tip" and not air then
+			kind = "set"
 		end
 		-- judge the touch at the moment the player clicked (up to 0.3 s ago)
 		local ht = t
@@ -1351,7 +1383,7 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		local bp = ballPos(ht)
 		local ok, q = reachCheck(slot, kind, rootPos, bp, air, ht)
-		if not ok and kind == "spike" then
+		if not ok and (kind == "spike" or kind == "tip") then
 			kind = "set"
 			ok, q = reachCheck(slot, kind, rootPos, bp, air, ht)
 		end
@@ -1429,28 +1461,29 @@ print("[Arena Volleyball] Ready. Change the rules in ArenaVolleyball > Config.")
 			<Properties>
 				<string name="Name">Config</string>
 				<ProtectedString name="Source"><![CDATA[-- ARENA VOLLEYBALL settings. Change a value, then press Play.
+-- Sizes use Roblox's scale of 1 stud = 0.28 m, so the court matches a real one.
 return {
-	TEAM_SIZE = 2, -- players per side (1 to 4). Empty spots are played by AI.
-	POINTS_TO_WIN = 15, -- points needed to win a set
+	TEAM_SIZE = 6, -- players per side (1 to 6). Empty spots are played by AI. 6 uses real rotations.
+	POINTS_TO_WIN = 25, -- points needed to win a set
 	WIN_BY = 2,
-	SETS_TO_WIN = 1, -- 1 = one set, 2 = best of three
+	SETS_TO_WIN = 1, -- 1 = one set, 2 = best of three, 3 = best of five
 	AI_LEVEL = 2, -- 1 rookie, 2 pro, 3 legend
 
 	TEAM_NAMES = { "HOME", "AWAY" },
 	TEAM_COLORS = { Color3.fromRGB(70, 140, 255), Color3.fromRGB(255, 96, 76) },
 
 	-- The court is built here, on the ground below this point.
-	COURT_CENTER = Vector3.new(0, 0, 90),
+	COURT_CENTER = Vector3.new(0, 0, 110),
 
-	-- Sizes in studs (roughly 3 studs to a metre)
-	COURT_LENGTH = 54,
-	COURT_WIDTH = 27,
-	NET_HEIGHT = 7.5,
+	-- Real dimensions in studs
+	COURT_LENGTH = 64, -- 18 m
+	COURT_WIDTH = 32, -- 9 m
+	NET_HEIGHT = 8.7, -- 2.43 m (men's net). Use 7.9 for the women's 2.24 m net.
 
-	GRAVITY = 48, -- ball gravity: lower is floatier
-	BALL_RADIUS = 0.8,
+	GRAVITY = 35, -- 9.81 m/s²
+	BALL_RADIUS = 0.42, -- a real ball is 0.38; a touch bigger so it's easy to follow
 	REACH = 6.5, -- how far from your body you can play the ball
-	SERVE_TIME = 12, -- seconds before a serve is made for you
+	SERVE_TIME = 8, -- seconds to serve (8 s, like the real rule) before one is made for you
 }
 ]]></ProtectedString>
 			</Properties>
@@ -1547,6 +1580,14 @@ local marker = worldPart({
 	Shape = Enum.PartType.Cylinder,
 	Size = Vector3.new(0.03, 4.4, 4.4),
 	Color = Color3.new(1, 1, 1),
+	Material = Enum.Material.Neon,
+	Transparency = 1,
+})
+
+local aimMarker = worldPart({
+	Name = "AimMarker",
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(0.03, 1.6, 1.6),
 	Material = Enum.Material.Neon,
 	Transparency = 1,
 })
@@ -1922,11 +1963,11 @@ local function hintText()
 	end
 	if state.phase == "rally" then
 		if lastInput == "touch" then
-			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  <b>DIVE</b> to reach"
+			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  jump + <b>SET</b> tip  ·  <b>DIVE</b>"
 		elseif lastInput == "pad" then
-			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>B</b> dive"
+			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>A</b> then <b>X</b> tip  ·  <b>B</b> dive"
 		end
-		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike  ·  <b>Q</b> dive  ·  aim with the mouse"
+		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike or <b>E</b> tip  ·  <b>Q</b> dive  ·  aim with the mouse"
 	end
 	if state.phase == "serve" then
 		return NAMES[state.serving] .. " to serve"
@@ -1988,24 +2029,40 @@ local function aimPoint()
 	return Vector3.new(o.X, GY, o.Z) + flat.Unit * 40
 end
 
+-- Same windows the server uses: can you play this touch right now?
+local WINDOWS = { bump = { -3.5, 5 }, set = { -2, 7 }, spike = { -2.5, 8 }, tip = { -2.5, 8 } }
+local function canPlay(kind, hum, hrp)
+	if not hrp or state.phase ~= "rally" or ballState.mode ~= "fly" then
+		return false
+	end
+	local team = myTeam()
+	local pos = ballAt(serverNow())
+	if team == 0 or (pos.Z - C.Z) * (team == 1 and 1 or -1) < -1.5 then
+		return false
+	end
+	local off = pos - hrp.Position
+	local win = WINDOWS[kind]
+	return Vector3.new(off.X, 0, off.Z).Magnitude <= REACH + 1.2 and off.Y > win[1] and off.Y < win[2]
+end
+
+local pending = nil -- a press made slightly early, played as soon as the ball arrives
+
 local function sendHit(kind)
+	local hum, hrp = character()
+	local air = airborne(hum) and os.clock() > diveUntil
+	if not air and (kind == "spike" or kind == "tip") then
+		kind = (kind == "spike") and "bump" or "set"
+	end
 	if os.clock() - lastSend < 0.3 then
 		return
 	end
-	local hum, hrp = character()
-	if not hrp or state.phase ~= "rally" or ballState.mode ~= "fly" then
+	if not canPlay(kind, hum, hrp) then
+		pending = { kind = kind, expires = os.clock() + 0.3 }
 		return
 	end
-	local t = serverNow()
-	local bp = ballAt(t)
-	if Vector3.new(bp.X - hrp.Position.X, 0, bp.Z - hrp.Position.Z).Magnitude > REACH + 5 then
-		return
-	end
+	pending = nil
 	lastSend = os.clock()
-	local air = airborne(hum) and os.clock() > diveUntil
-	if kind == "spike" and not air then
-		kind = "bump"
-	end
+	local t = serverNow()
 	remote:FireServer("hit", { kind = kind, aim = aimPoint(), root = hrp.Position, air = air, id = ballState.id, t = t })
 end
 
@@ -2017,12 +2074,7 @@ local function press()
 		end
 		return
 	end
-	local hum = character()
-	if airborne(hum) and os.clock() > diveUntil then
-		sendHit("spike")
-	else
-		sendHit("bump")
-	end
+	sendHit("spike") -- in the air this spikes; on the ground it becomes a pass
 end
 
 local function release()
@@ -2039,7 +2091,7 @@ end
 
 local function setBall()
 	if not myServe() then
-		sendHit("set")
+		sendHit("tip") -- in the air this tips over the block; on the ground it sets
 	end
 end
 
@@ -2085,7 +2137,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		press()
 	elseif key == Enum.KeyCode.E or key == Enum.KeyCode.ButtonX then
 		setBall()
-	elseif key == Enum.KeyCode.Q or key == Enum.KeyCode.ButtonB then
+	elseif key == Enum.KeyCode.Q or key == Enum.KeyCode.C or key == Enum.KeyCode.ButtonB then
 		dive()
 	end
 end)
@@ -2140,9 +2192,9 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		flash("MISSED", DIM)
 	elseif kind == "cue" then
 		local keys = {
-			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK", over = "CLICK" },
-			pad = { bump = "R2", set = "X", spike = "A + R2", over = "R2" },
-			touch = { bump = "HIT", set = "SET", spike = "JUMP + HIT", over = "HIT" },
+			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK  (E to tip)", over = "CLICK" },
+			pad = { bump = "R2", set = "X", spike = "A + R2  (X to tip)", over = "R2" },
+			touch = { bump = "HIT", set = "SET", spike = "JUMP + HIT  (SET to tip)", over = "HIT" },
 		}
 		local words = { bump = "PASS", set = "SET", spike = "SPIKE", over = "SEND IT OVER" }
 		local key = (keys[lastInput] or keys.kbm)[a] or ""
@@ -2199,6 +2251,30 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 	end
 	reachGlow.Enabled = glow
+
+	-- play a slightly early press the moment the ball arrives
+	if pending then
+		local hum, hrp = character()
+		if os.clock() > pending.expires or not live then
+			pending = nil
+		elseif canPlay(pending.kind, hum, hrp) then
+			local kind = pending.kind
+			pending = nil
+			lastSend = 0
+			sendHit(kind)
+		end
+	end
+
+	-- where your serve or spike will go
+	local aiming = (charging and myServe()) or (live and team ~= 0 and airborne((character())))
+	if aiming then
+		local aim = aimPoint()
+		aimMarker.CFrame = CFrame.new(aim.X, GY + 0.05, aim.Z) * FLAT
+		aimMarker.Color = COLORS[team] or Color3.new(1, 1, 1)
+		aimMarker.Transparency = 0.45
+	else
+		aimMarker.Transparency = 1
+	end
 
 	local cueOn = live and t < cueUntil
 	cue.TextTransparency = cueOn and 0.05 or 1
