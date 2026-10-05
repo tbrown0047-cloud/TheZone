@@ -1,0 +1,428 @@
+
+---------------------------------------------------------------- state from the server
+
+local state = {
+	phase = "waiting",
+	score = { 0, 0 },
+	sets = { 0, 0 },
+	serving = 1,
+	server = 0,
+	touches = 0,
+	touchTeam = 0,
+	roster = { {}, {} },
+	deadline = 0,
+}
+local ballState = {
+	id = 0,
+	mode = "rest",
+	p0 = C + Vector3.new(0, R, 0),
+	v0 = Vector3.zero,
+	t0 = 0,
+	rest = C + Vector3.new(0, R, 0),
+}
+
+local function myTeam()
+	for t = 1, 2 do
+		for _, id in state.roster[t] or {} do
+			if id == player.UserId then
+				return t
+			end
+		end
+	end
+	return 0
+end
+
+local function myServe()
+	return state.phase == "serve" and state.server == player.UserId
+end
+
+local function character()
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	return hum, hrp
+end
+
+local function airborne(hum)
+	return hum ~= nil and hum.FloorMaterial == Enum.Material.Air
+end
+
+local function ballAt(t)
+	if ballState.mode == "fly" then
+		local dt = math.max(t - ballState.t0, 0)
+		local p = ballState.p0 + ballState.v0 * dt + Vector3.new(0, -0.5 * G * dt * dt, 0)
+		if p.Y < FLOOR then
+			p = Vector3.new(p.X, FLOOR, p.Z)
+		end
+		return p
+	elseif ballState.mode == "hold" then
+		local holder = ballState.holder
+		local hrp = holder and holder.Parent and holder:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			return (hrp.CFrame * CFrame.new(0.5, 0.4, -1.4)).Position
+		end
+	end
+	return ballState.rest
+end
+
+local function landingPoint()
+	local p0, v0 = ballState.p0, ballState.v0
+	local disc = v0.Y * v0.Y + 2 * G * (p0.Y - FLOOR)
+	if disc < 0 then
+		return nil
+	end
+	local s = (v0.Y + math.sqrt(disc)) / G
+	return p0 + v0 * s + Vector3.new(0, -0.5 * G * s * s, 0)
+end
+
+---------------------------------------------------------------- HUD updates
+
+local lastInput = touchMode and "touch" or "kbm"
+UserInputService.LastInputTypeChanged:Connect(function(inputType)
+	if inputType == Enum.UserInputType.Touch then
+		lastInput = "touch"
+	elseif string.find(inputType.Name, "Gamepad") then
+		lastInput = "pad"
+	elseif inputType == Enum.UserInputType.Keyboard or string.find(inputType.Name, "Mouse") then
+		lastInput = "kbm"
+	end
+end)
+
+local function refreshBoard()
+	homeScore.Text = tostring(state.score[1])
+	awayScore.Text = tostring(state.score[2])
+	homeDot.Visible = state.serving == 1
+	awayDot.Visible = state.serving == 2
+	if Config.SETS_TO_WIN > 1 then
+		midLabel.Text = "SETS " .. state.sets[1] .. "-" .. state.sets[2]
+	else
+		midLabel.Text = "TO " .. Config.POINTS_TO_WIN
+	end
+	local team = myTeam()
+	homeName.TextColor3 = (team == 2) and DIM or TEXT
+	awayName.TextColor3 = (team == 1) and DIM or TEXT
+	local showDots = state.phase == "rally" and state.touchTeam ~= 0 and state.touches > 0
+	dotsFrame.Visible = showDots
+	for i = 1, 3 do
+		local used = showDots and i <= state.touches
+		dots[i].BackgroundColor3 = used and (COLORS[state.touchTeam] or TEXT) or TEXT
+		dots[i].BackgroundTransparency = used and 0 or 0.75
+	end
+end
+
+local function hintText()
+	local team = myTeam()
+	if team == 0 then
+		return "Watching  ·  both teams are full"
+	end
+	if myServe() then
+		local left = math.max(0, math.ceil(state.deadline - serverNow()))
+		local timer = "   <font color=\"#9aa0aa\">" .. left .. "</font>"
+		if lastInput == "touch" then
+			return "<b>HOLD HIT</b> to power up, let go in the green  ·  jump first for a jump serve" .. timer
+		elseif lastInput == "pad" then
+			return "<b>HOLD R2</b> to power up, let go in the green  ·  aim with the camera  ·  <b>A</b> first for a jump serve" .. timer
+		end
+		return "<b>HOLD CLICK</b> to power up, let go in the green  ·  aim with the mouse  ·  <b>SPACE</b> first for a jump serve" .. timer
+	end
+	if state.phase == "rally" then
+		if lastInput == "touch" then
+			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  <b>DIVE</b> to reach"
+		elseif lastInput == "pad" then
+			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>B</b> dive"
+		end
+		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike  ·  <b>Q</b> dive  ·  aim with the mouse"
+	end
+	if state.phase == "serve" then
+		return NAMES[state.serving] .. " to serve"
+	end
+	return ""
+end
+
+-- Swings the camera round behind you, facing the net
+local function lookAtNet()
+	local _, hrp = character()
+	local cam = workspace.CurrentCamera
+	if not hrp or not cam then
+		return
+	end
+	local to = Vector3.new(C.X - hrp.Position.X, 0, C.Z - hrp.Position.Z)
+	if to.Magnitude < 1 then
+		return
+	end
+	to = to.Unit
+	cam.CFrame = CFrame.lookAt(hrp.Position - to * 12 + Vector3.new(0, 5, 0), hrp.Position + to * 10)
+end
+
+player.CharacterAdded:Connect(function()
+	task.delay(0.6, function()
+		if myTeam() ~= 0 then
+			lookAtNet()
+		end
+	end)
+end)
+
+---------------------------------------------------------------- controls
+
+local charging, chargeStart = false, 0
+local lastSend, lastDive, diveUntil = 0, 0, 0
+local cueUntil = 0
+
+local function chargePower()
+	return math.clamp((os.clock() - chargeStart) / 1.2, 0, 1)
+end
+
+-- Where you're aiming on the floor: the mouse, or the middle of the screen on touch / gamepad
+local function aimPoint()
+	local cam = workspace.CurrentCamera
+	local ray
+	if lastInput == "kbm" then
+		local m = UserInputService:GetMouseLocation()
+		ray = cam:ViewportPointToRay(m.X, m.Y)
+	else
+		ray = cam:ViewportPointToRay(cam.ViewportSize.X / 2, cam.ViewportSize.Y * 0.45)
+	end
+	local o, d = ray.Origin, ray.Direction
+	if d.Y < -0.02 then
+		return o + d * ((GY - o.Y) / d.Y)
+	end
+	local flat = Vector3.new(d.X, 0, d.Z)
+	if flat.Magnitude < 1e-3 then
+		flat = Vector3.new(0, 0, -1)
+	end
+	return Vector3.new(o.X, GY, o.Z) + flat.Unit * 40
+end
+
+local function sendHit(kind)
+	if os.clock() - lastSend < 0.3 then
+		return
+	end
+	local hum, hrp = character()
+	if not hrp or state.phase ~= "rally" or ballState.mode ~= "fly" then
+		return
+	end
+	local t = serverNow()
+	local bp = ballAt(t)
+	if Vector3.new(bp.X - hrp.Position.X, 0, bp.Z - hrp.Position.Z).Magnitude > REACH + 5 then
+		return
+	end
+	lastSend = os.clock()
+	local air = airborne(hum) and os.clock() > diveUntil
+	if kind == "spike" and not air then
+		kind = "bump"
+	end
+	remote:FireServer("hit", { kind = kind, aim = aimPoint(), root = hrp.Position, air = air, id = ballState.id, t = t })
+end
+
+local function press()
+	if myServe() then
+		if ballState.mode == "hold" and not charging then
+			charging = true
+			chargeStart = os.clock()
+		end
+		return
+	end
+	local hum = character()
+	if airborne(hum) and os.clock() > diveUntil then
+		sendHit("spike")
+	else
+		sendHit("bump")
+	end
+end
+
+local function release()
+	if not charging then
+		return
+	end
+	charging = false
+	local hum, hrp = character()
+	if not hrp or not myServe() then
+		return
+	end
+	remote:FireServer("serve", { aim = aimPoint(), power = chargePower(), root = hrp.Position, air = airborne(hum) })
+end
+
+local function setBall()
+	if not myServe() then
+		sendHit("set")
+	end
+end
+
+local function dive()
+	local hum, hrp = character()
+	if not hum or not hrp or state.phase ~= "rally" then
+		return
+	end
+	if os.clock() - lastDive < 1.4 or airborne(hum) then
+		return
+	end
+	local dir = hum.MoveDirection
+	if dir.Magnitude < 0.1 then
+		dir = hrp.CFrame.LookVector
+	end
+	dir = Vector3.new(dir.X, 0, dir.Z)
+	if dir.Magnitude < 0.01 then
+		return
+	end
+	lastDive = os.clock()
+	diveUntil = os.clock() + 0.7
+	remote:FireServer("dive", {})
+	hrp.AssemblyLinearVelocity = dir.Unit * 42 + Vector3.new(0, 14, 0)
+	local speed = hum.WalkSpeed
+	task.delay(0.35, function()
+		if hum.Parent then
+			hum.WalkSpeed = 4
+		end
+	end)
+	task.delay(0.9, function()
+		if hum.Parent then
+			hum.WalkSpeed = speed
+		end
+	end)
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+	local key = input.KeyCode
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
+		press()
+	elseif key == Enum.KeyCode.E or key == Enum.KeyCode.ButtonX then
+		setBall()
+	elseif key == Enum.KeyCode.Q or key == Enum.KeyCode.ButtonB then
+		dive()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.KeyCode == Enum.KeyCode.ButtonR2 then
+		release()
+	end
+end)
+
+hitButton.MouseButton1Down:Connect(press)
+hitButton.MouseButton1Up:Connect(release)
+setButton.MouseButton1Down:Connect(setBall)
+diveButton.MouseButton1Down:Connect(dive)
+
+---------------------------------------------------------------- messages from the server
+
+remote.OnClientEvent:Connect(function(kind, a, b, c)
+	if kind == "ball" then
+		ballState = a
+		if a.mode ~= "hold" then
+			charging = false
+		end
+	elseif kind == "state" then
+		local wasServing, hadTeam = myServe(), myTeam() ~= 0
+		state = a
+		if not myServe() then
+			charging = false
+		elseif not wasServing then
+			task.delay(0.35, lookAtNet)
+		end
+		if not hadTeam and myTeam() ~= 0 then
+			task.delay(0.8, lookAtNet)
+		end
+		refreshBoard()
+	elseif kind == "banner" then
+		showBanner(a, b, c)
+	elseif kind == "fx" then
+		if a == "hit" then
+			burst(b, Color3.new(1, 1, 1), 4)
+			if c and c.user == player.UserId and c.kind ~= "serve" then
+				showQuality(c.q or 0.5)
+			end
+		elseif a == "block" then
+			burst(b, Color3.fromRGB(255, 230, 120), 6)
+		elseif a == "net" then
+			burst(b, Color3.fromRGB(200, 220, 255), 3)
+		elseif a == "land" then
+			ripple(b, (c and c.inside) and Color3.new(1, 1, 1) or Color3.fromRGB(255, 110, 90))
+		end
+	elseif kind == "miss" then
+		flash("MISSED", DIM)
+	elseif kind == "cue" then
+		local keys = {
+			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK", over = "CLICK" },
+			pad = { bump = "R2", set = "X", spike = "A + R2", over = "R2" },
+			touch = { bump = "HIT", set = "SET", spike = "JUMP + HIT", over = "HIT" },
+		}
+		local words = { bump = "PASS", set = "SET", spike = "SPIKE", over = "SEND IT OVER" }
+		local key = (keys[lastInput] or keys.kbm)[a] or ""
+		cue.Text = "YOUR BALL  ·  " .. (words[a] or "PLAY IT") .. "  <font color=\"#9aa0aa\">" .. key .. "</font>"
+		cueUntil = (b or serverNow()) + 0.4
+	end
+end)
+
+---------------------------------------------------------------- every frame
+
+local spin = 0
+RunService.RenderStepped:Connect(function(dt)
+	local t = serverNow()
+	local pos = ballAt(t)
+	if ballState.mode == "fly" then
+		spin += dt * math.min(ballState.v0.Magnitude, 60) * 0.3
+	end
+	local cf = CFrame.new(pos) * CFrame.Angles(spin, spin * 0.4, 0)
+	ballPart.CFrame = cf
+	for i, band in stripes do
+		band.CFrame = cf * STRIPE_OFFSET[i]
+	end
+
+	local height = math.max(pos.Y - GY, 0)
+	local d = math.clamp(2.2 - height * 0.06, 0.7, 2.2)
+	shadow.Size = Vector3.new(0.04, d, d)
+	shadow.CFrame = CFrame.new(pos.X, GY + 0.05, pos.Z) * FLAT
+	shadow.Transparency = math.clamp(0.5 + height * 0.025, 0.5, 0.88)
+
+	local live = state.phase == "rally" and ballState.mode == "fly"
+	local land = live and landingPoint()
+	if land then
+		marker.CFrame = CFrame.new(land.X, GY + 0.04, land.Z) * FLAT
+		marker.Transparency = 0.8
+	else
+		marker.Transparency = 1
+	end
+
+	-- white outline on the ball when it's in your reach
+	local glow = false
+	local team = myTeam()
+	if live and team ~= 0 then
+		local hum, hrp = character()
+		if hrp then
+			local off = pos - hrp.Position
+			local flat = Vector3.new(off.X, 0, off.Z).Magnitude
+			local mySide = (pos.Z - C.Z) * (team == 1 and 1 or -1) > -1.5
+			-- same windows the server uses: spike in the air, pass on the ground
+			local lo, hi = -3.5, 5
+			if airborne(hum) then
+				lo, hi = -2.5, 8
+			end
+			glow = mySide and flat <= REACH + 1.2 and off.Y > lo and off.Y < hi
+		end
+	end
+	reachGlow.Enabled = glow
+
+	local cueOn = live and t < cueUntil
+	cue.TextTransparency = cueOn and 0.05 or 1
+	cue.TextStrokeTransparency = cueOn and 0.6 or 1
+
+	if charging then
+		powerBar.Visible = true
+		powerFill.Size = UDim2.fromScale(chargePower(), 1)
+		if os.clock() - chargeStart > 2.2 then
+			release() -- held far too long
+		end
+	else
+		powerBar.Visible = false
+	end
+	local text = hintText()
+	if hint.Text ~= text then
+		hint.Text = text
+	end
+end)
+
+refreshBoard()
+remote:FireServer("sync")

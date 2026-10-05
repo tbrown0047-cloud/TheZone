@@ -1,0 +1,2228 @@
+<roblox version="4">
+	<Item class="Folder" referent="RBX0">
+		<Properties>
+			<string name="Name">ArenaVolleyball</string>
+		</Properties>
+		<Item class="Script" referent="RBX1">
+			<Properties>
+				<string name="Name">Server</string>
+				<ProtectedString name="Source"><![CDATA[-- ARENA VOLLEYBALL (server)
+-- Builds the court, runs the rules, the ball and the AI players.
+-- Settings are in the Config module next to this script.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterPlayer = game:GetService("StarterPlayer")
+
+local pack = script.Parent
+local Config = require(pack:WaitForChild("Config"))
+local clientTemplate = pack:WaitForChild("Client")
+
+if ReplicatedStorage:FindFirstChild("ArenaVolleyball") then
+	warn("[Arena Volleyball] Another copy is already running. Delete the extra ArenaVolleyball.")
+	return
+end
+
+local TEAM_SIZE = math.clamp(math.floor(Config.TEAM_SIZE or 2), 1, 4)
+local HALF_L = Config.COURT_LENGTH / 2
+local HALF_W = Config.COURT_WIDTH / 2
+local NET_H = Config.NET_HEIGHT
+local G = Config.GRAVITY
+local R = Config.BALL_RADIUS
+local REACH = Config.REACH
+local LEVEL = math.clamp(math.floor(Config.AI_LEVEL or 2), 1, 3)
+
+-- How each AI level plays
+local AI = ({
+	{ speed = 14, react = 0.38, quality = 0.55, spike = 54, blockTry = 0.3, blockWin = 0.4, letGo = 0.4, serveLo = 0.35, serveHi = 0.7, margin = 4.5, fault = 0.07, attackErr = 0.16, shank = 0.1, jumpServe = 0.1 },
+	{ speed = 17, react = 0.24, quality = 0.72, spike = 66, blockTry = 0.55, blockWin = 0.55, letGo = 0.75, serveLo = 0.45, serveHi = 0.82, margin = 3, fault = 0.04, attackErr = 0.09, shank = 0.05, jumpServe = 0.3 },
+	{ speed = 20, react = 0.14, quality = 0.88, spike = 78, blockTry = 0.8, blockWin = 0.65, letGo = 0.92, serveLo = 0.55, serveHi = 0.9, margin = 1.8, fault = 0.025, attackErr = 0.05, shank = 0.02, jumpServe = 0.5 },
+})[LEVEL]
+
+local rng = Random.new()
+
+local function now()
+	return workspace:GetServerTimeNow()
+end
+
+-- Team 1 plays on the +Z half, team 2 on the -Z half
+local function side(team)
+	return team == 1 and 1 or -1
+end
+
+local function flatDist(a, b)
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+-- Match state shared by every part of this script
+local phase = "waiting" -- waiting, serve, rally, point, setover, matchover
+local servingTeam = 1
+local serveAt, serveDeadline, phaseUntil = 0, 0, 0
+local sendState, sendBall, currentServer, setupServe -- defined further down
+
+---------------------------------------------------------------- court
+
+local function findGround(pos)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = {}
+	local hit = workspace:Raycast(pos + Vector3.new(0, 150, 0), Vector3.new(0, -300, 0), params)
+	return hit and hit.Position.Y or pos.Y
+end
+
+local courtFolder = Instance.new("Folder")
+courtFolder.Name = "VolleyballCourt"
+
+local base = Config.COURT_CENTER
+local groundY = findGround(base)
+local GY = groundY + 0.44 -- top of the playing surface
+local C = Vector3.new(base.X, GY, base.Z) -- centre of the court, on the floor
+
+local function part(props)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Material = Enum.Material.SmoothPlastic
+	if props.CanCollide ~= nil then
+		p.CanCollide = props.CanCollide -- before CanQuery, which needs it off
+	end
+	for key, value in props do
+		p[key] = value
+	end
+	p.Parent = courtFolder
+	return p
+end
+
+-- floor: blue free zone around an orange court
+part({
+	Name = "FreeZone",
+	Size = Vector3.new(Config.COURT_WIDTH + 26, 0.4, Config.COURT_LENGTH + 26),
+	CFrame = CFrame.new(C.X, groundY + 0.2, C.Z),
+	Color = Color3.fromRGB(34, 74, 128),
+})
+part({
+	Name = "Court",
+	Size = Vector3.new(Config.COURT_WIDTH, 0.44, Config.COURT_LENGTH),
+	CFrame = CFrame.new(C.X, groundY + 0.22, C.Z),
+	Color = Color3.fromRGB(214, 128, 62),
+})
+
+local LINE = Color3.fromRGB(245, 245, 245)
+local function line(name, size, offset, transparency)
+	part({
+		Name = name,
+		Size = size,
+		CFrame = CFrame.new(C + offset),
+		Color = LINE,
+		Transparency = transparency or 0,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		CastShadow = false,
+	})
+end
+line("SideLine", Vector3.new(0.35, 0.06, Config.COURT_LENGTH + 0.35), Vector3.new(-HALF_W, 0, 0))
+line("SideLine", Vector3.new(0.35, 0.06, Config.COURT_LENGTH + 0.35), Vector3.new(HALF_W, 0, 0))
+line("EndLine", Vector3.new(Config.COURT_WIDTH + 0.35, 0.06, 0.35), Vector3.new(0, 0, -HALF_L))
+line("EndLine", Vector3.new(Config.COURT_WIDTH + 0.35, 0.06, 0.35), Vector3.new(0, 0, HALF_L))
+line("CentreLine", Vector3.new(Config.COURT_WIDTH, 0.06, 0.3), Vector3.zero)
+local attack = Config.COURT_LENGTH / 6
+line("AttackLine", Vector3.new(Config.COURT_WIDTH, 0.06, 0.3), Vector3.new(0, 0, attack), 0.35)
+line("AttackLine", Vector3.new(Config.COURT_WIDTH, 0.06, 0.3), Vector3.new(0, 0, -attack), 0.35)
+
+-- net, posts and antennas
+for _, sx in { -1, 1 } do
+	part({
+		Name = "Post",
+		Size = Vector3.new(0.6, NET_H + 1.5, 0.6),
+		CFrame = CFrame.new(C.X + sx * (HALF_W + 2.5), GY + (NET_H + 1.5) / 2, C.Z),
+		Color = Color3.fromRGB(60, 64, 72),
+		Material = Enum.Material.Metal,
+	})
+	part({
+		Name = "Antenna",
+		Size = Vector3.new(0.18, 5.6, 0.18),
+		CFrame = CFrame.new(C.X + sx * HALF_W, GY + NET_H - 0.2, C.Z),
+		Color = Color3.fromRGB(230, 60, 60),
+		CanCollide = false,
+		CastShadow = false,
+	})
+end
+part({
+	Name = "Net",
+	Size = Vector3.new(Config.COURT_WIDTH + 5, 3, 0.12),
+	CFrame = CFrame.new(C.X, GY + NET_H - 1.7, C.Z),
+	Color = Color3.fromRGB(235, 235, 235),
+	Material = Enum.Material.Fabric,
+	Transparency = 0.55,
+	CastShadow = false,
+})
+part({
+	Name = "NetBand",
+	Size = Vector3.new(Config.COURT_WIDTH + 5, 0.4, 0.18),
+	CFrame = CFrame.new(C.X, GY + NET_H - 0.2, C.Z),
+	Color = Color3.fromRGB(250, 250, 250),
+	CastShadow = false,
+})
+-- invisible wall so nobody walks or jumps onto the other side
+part({
+	Name = "Divider",
+	Size = Vector3.new(Config.COURT_WIDTH + 60, 40, 0.6),
+	CFrame = CFrame.new(C.X, GY + 20, C.Z),
+	Transparency = 1,
+	CastShadow = false,
+})
+
+---------------------------------------------------------------- shared objects for the client
+
+local shared = Instance.new("Folder")
+shared.Name = "ArenaVolleyball"
+shared:SetAttribute("Center", C)
+local remote = Instance.new("RemoteEvent")
+remote.Name = "Remote"
+remote.Parent = shared
+local configCopy = pack.Config:Clone()
+configCopy.Parent = shared
+shared.Parent = ReplicatedStorage
+courtFolder.Parent = workspace
+
+---------------------------------------------------------------- teams and players
+
+-- Each team has TEAM_SIZE slots. A slot is played by a person or by an AI body.
+local teams = {}
+for t = 1, 2 do
+	teams[t] = { id = t, slots = {}, score = 0, sets = 0, serveIndex = (t == 1) and 1 or 0 }
+	for i = 1, TEAM_SIZE do
+		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {} }
+	end
+end
+local slotOfPlayer = {}
+
+-- Where a player stands while waiting. lz is the distance from the net.
+local function homeSpot(slot, mode)
+	local s = side(slot.team)
+	local x = 0
+	if TEAM_SIZE > 1 then
+		x = (-1 + 2 * (slot.index - 1) / (TEAM_SIZE - 1)) * HALF_W * 0.5
+	end
+	local depth = (mode == "serving") and HALF_L * 0.45 or HALF_L * 0.6
+	return Vector3.new(C.X + x, GY, C.Z + s * depth)
+end
+
+local function serveSpot(slot)
+	return Vector3.new(C.X, GY, C.Z + side(slot.team) * (HALF_L + 3))
+end
+
+local function standHeight(slot)
+	local hum, hrp = slot.humanoid, slot.root
+	if hum and hrp then
+		return GY + hum.HipHeight + hrp.Size.Y / 2
+	end
+	return GY + 3
+end
+
+local function placeSlot(slot, pos)
+	local model = slot.model
+	if not model or not slot.root then
+		return
+	end
+	local p = Vector3.new(pos.X, standHeight(slot) + 0.2, pos.Z)
+	model:PivotTo(CFrame.lookAt(p, Vector3.new(C.X, p.Y, C.Z)))
+	slot.ai.goal = nil
+	if slot.isAI and slot.humanoid then
+		slot.humanoid:MoveTo(p)
+	end
+end
+
+local SKIN = {
+	Color3.fromRGB(255, 220, 177),
+	Color3.fromRGB(234, 192, 134),
+	Color3.fromRGB(198, 134, 66),
+	Color3.fromRGB(141, 85, 36),
+	Color3.fromRGB(94, 58, 26),
+}
+local BOT_NAMES = { "Silva", "Kato", "Novak", "Reyes", "Okafor", "Lindqvist", "Moreau", "Park", "Rossi", "Haddad", "Ivanov", "Costa" }
+local ANIM_IDS = { idle = 507766666, run = 507767714, jump = 507765000 }
+
+-- Used only if Roblox can't build a normal body
+local function simpleBody(slot)
+	local model = Instance.new("Model")
+	local hrp = Instance.new("Part")
+	hrp.Name = "HumanoidRootPart"
+	hrp.Size = Vector3.new(2, 2, 1)
+	hrp.Transparency = 1
+	hrp.CFrame = CFrame.new(0, 3, 0)
+	hrp.Parent = model
+	local torso = Instance.new("Part")
+	torso.Name = "Torso"
+	torso.Size = Vector3.new(2, 2.6, 1)
+	torso.Color = Config.TEAM_COLORS[slot.team]
+	torso.CanCollide = false
+	torso.Massless = true
+	torso.CFrame = hrp.CFrame
+	torso.Parent = model
+	local head = Instance.new("Part")
+	head.Name = "Head"
+	head.Shape = Enum.PartType.Ball
+	head.Size = Vector3.new(1.3, 1.3, 1.3)
+	head.Color = SKIN[1]
+	head.CanCollide = false
+	head.Massless = true
+	head.CFrame = hrp.CFrame * CFrame.new(0, 2, 0)
+	head.Parent = model
+	for _, p in { torso, head } do
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = hrp
+		weld.Part1 = p
+		weld.Parent = hrp
+	end
+	local hum = Instance.new("Humanoid")
+	hum.RigType = Enum.HumanoidRigType.R15
+	hum.HipHeight = 2
+	hum.Parent = model
+	model.PrimaryPart = hrp
+	return model
+end
+
+local botCount = 0
+local function makeBot(slot)
+	local desc = Instance.new("HumanoidDescription")
+	local skin = SKIN[rng:NextInteger(1, #SKIN)]
+	desc.HeadColor = skin
+	desc.LeftArmColor = skin
+	desc.RightArmColor = skin
+	desc.TorsoColor = Config.TEAM_COLORS[slot.team]
+	desc.LeftLegColor = Color3.fromRGB(35, 38, 48)
+	desc.RightLegColor = Color3.fromRGB(35, 38, 48)
+	local ok, model = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R15)
+	if not ok or not model then
+		warn("[Arena Volleyball] Using a simple AI body: " .. tostring(model))
+		model = simpleBody(slot)
+	end
+	-- a person may have taken this spot while the body was being made
+	if not slot.isAI or slot.model then
+		model:Destroy()
+		return
+	end
+	botCount += 1
+	model.Name = BOT_NAMES[(botCount - 1) % #BOT_NAMES + 1]
+	local animate = model:FindFirstChild("Animate")
+	if animate then
+		animate:Destroy()
+	end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	local hrp = model:FindFirstChild("HumanoidRootPart")
+	if not hum or not hrp then
+		model:Destroy()
+		return
+	end
+	hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	hum.WalkSpeed = AI.speed
+	hum.UseJumpPower = true
+	hum.JumpPower = 50
+	hum.BreakJointsOnDeath = false
+	hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+	hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+	hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+	hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
+	model:SetAttribute("VolleyballAI", true)
+
+	slot.model, slot.humanoid, slot.root = model, hum, hrp
+	slot.ai = {}
+	model.Parent = courtFolder
+	if phase == "serve" and currentServer() == slot then
+		placeSlot(slot, serveSpot(slot))
+	else
+		placeSlot(slot, homeSpot(slot))
+	end
+	pcall(function()
+		hrp:SetNetworkOwner(nil)
+	end)
+
+	local animator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator")
+	animator.Parent = hum
+	slot.tracks = {}
+	for name, id in ANIM_IDS do
+		local anim = Instance.new("Animation")
+		anim.AnimationId = "rbxassetid://" .. id
+		local loaded, track = pcall(animator.LoadAnimation, animator, anim)
+		if loaded and track then
+			slot.tracks[name] = track
+		end
+	end
+	slot.anim = nil
+end
+
+-- Plays idle / run / jump on an AI body
+local function animateBot(slot)
+	local tracks, hum, hrp = slot.tracks, slot.humanoid, slot.root
+	if not tracks or not hum or not hrp then
+		return
+	end
+	local vel = hrp.AssemblyLinearVelocity
+	local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+	local want = "idle"
+	if hum.FloorMaterial == Enum.Material.Air then
+		want = "jump"
+	elseif speed > 1.5 then
+		want = "run"
+	end
+	if want ~= slot.anim then
+		if slot.anim and tracks[slot.anim] then
+			tracks[slot.anim]:Stop(0.15)
+		end
+		if tracks[want] then
+			tracks[want]:Play(0.15)
+		end
+		slot.anim = want
+	end
+	if want == "run" and tracks.run then
+		tracks.run:AdjustSpeed(math.clamp(speed / 16, 0.6, 1.6))
+	end
+end
+
+local function clearBody(slot)
+	if slot.isAI and slot.model then
+		slot.model:Destroy()
+	end
+	slot.model, slot.humanoid, slot.root, slot.tracks, slot.anim = nil, nil, nil, nil, nil
+	slot.ai = {}
+end
+
+local function bindCharacter(slot, plr, char)
+	local hum = char:WaitForChild("Humanoid", 10)
+	local hrp = char:WaitForChild("HumanoidRootPart", 10)
+	if slot.player ~= plr or not hum or not hrp then
+		return
+	end
+	slot.model, slot.humanoid, slot.root = char, hum, hrp
+	task.wait(0.15)
+	if slot.player ~= plr or slot.model ~= char then
+		return
+	end
+	if phase == "serve" and currentServer() == slot then
+		placeSlot(slot, serveSpot(slot))
+	else
+		placeSlot(slot, homeSpot(slot))
+	end
+end
+
+local function addPlayer(plr)
+	if slotOfPlayer[plr] then
+		return
+	end
+	-- people fill HOME first, so you play with or against AI
+	local slot
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.isAI and not slot then
+				slot = s
+			end
+		end
+	end
+	if not slot then
+		return -- teams are full: this person watches
+	end
+	clearBody(slot)
+	slot.isAI = false
+	slot.player = plr
+	slotOfPlayer[plr] = slot
+	plr.CharacterAdded:Connect(function(char)
+		bindCharacter(slot, plr, char)
+	end)
+	if plr.Character then
+		task.spawn(bindCharacter, slot, plr, plr.Character)
+	end
+	if phase == "serve" and currentServer() == slot then
+		serveDeadline = now() + Config.SERVE_TIME
+	end
+	sendState()
+end
+
+local function removePlayer(plr)
+	local slot = slotOfPlayer[plr]
+	if not slot then
+		return
+	end
+	slotOfPlayer[plr] = nil
+	slot.player = nil
+	slot.model, slot.humanoid, slot.root = nil, nil, nil
+	slot.isAI = true
+	slot.ai = {}
+	if phase == "serve" and currentServer() == slot then
+		serveAt = now() + 2.5
+	end
+	task.spawn(makeBot, slot)
+	sendState()
+end
+
+---------------------------------------------------------------- the ball
+-- The ball is pure maths: a start point, a velocity and a start time. Clients draw it
+-- from the same numbers, so it looks smooth for everyone and the server decides points.
+
+local ball = {
+	id = 0,
+	mode = "rest", -- hold, fly, rest
+	p0 = C + Vector3.new(0, R, 0),
+	v0 = Vector3.zero,
+	t0 = 0,
+	netDone = false,
+	bounces = 0,
+	live = false,
+	lastTeam = 0,
+	lastSlot = nil,
+	lastKind = nil,
+	touches = 0,
+	holder = nil,
+	restPos = C + Vector3.new(0, R, 0),
+}
+
+local GV = Vector3.new(0, -G, 0)
+local FLOOR = GY + R -- ball centre height when it touches the floor
+
+local function ballPos(t)
+	local dt = t - ball.t0
+	return ball.p0 + ball.v0 * dt + GV * (0.5 * dt * dt)
+end
+
+local function ballVel(t)
+	return ball.v0 + GV * (t - ball.t0)
+end
+
+-- Time when the ball comes down through height h, or nil if it never gets that high
+local function heightTime(h)
+	local vy = ball.v0.Y
+	local disc = vy * vy + 2 * G * (ball.p0.Y - h)
+	if disc < 0 then
+		return nil
+	end
+	return ball.t0 + (vy + math.sqrt(disc)) / G
+end
+
+local function landTime()
+	return math.max(heightTime(FLOOR) or ball.t0, ball.t0)
+end
+
+local function netTime()
+	if ball.netDone or math.abs(ball.v0.Z) < 1e-3 then
+		return math.huge
+	end
+	local s = (C.Z - ball.p0.Z) / ball.v0.Z
+	if s <= 1e-4 then
+		return math.huge
+	end
+	return ball.t0 + s
+end
+
+local function ballPacket()
+	local holder = nil
+	if ball.mode == "hold" and ball.holder then
+		holder = ball.holder.model
+	end
+	return {
+		id = ball.id,
+		mode = ball.mode,
+		p0 = ball.p0,
+		v0 = ball.v0,
+		t0 = ball.t0,
+		rest = ball.restPos,
+		holder = holder,
+	}
+end
+
+function sendBall(plr)
+	if plr then
+		remote:FireClient(plr, "ball", ballPacket())
+	else
+		remote:FireAllClients("ball", ballPacket())
+	end
+end
+
+local function launch(p, v, t, netDone, keepBounces)
+	if p.Y < FLOOR + 0.05 then
+		p = Vector3.new(p.X, FLOOR + 0.05, p.Z)
+	end
+	ball.id += 1
+	ball.mode = "fly"
+	ball.p0, ball.v0, ball.t0 = p, v, t
+	ball.netDone = netDone == true
+	if not keepBounces then
+		ball.bounces = 0
+		ball.netHit = false
+	end
+	sendBall()
+end
+
+local function banner(title, sub, team)
+	remote:FireAllClients("banner", title, sub or "", team or 0)
+end
+
+---------------------------------------------------------------- aiming helpers
+
+-- Velocity that carries the ball from p to target in tau seconds
+local function solve(p, target, tau)
+	return (target - p) / tau + Vector3.new(0, 0.5 * G * tau, 0)
+end
+
+local function clearsNet(p, v)
+	if math.abs(v.Z) < 1e-3 then
+		return true
+	end
+	local s = (C.Z - p.Z) / v.Z
+	if s <= 0 then
+		return true
+	end
+	local y = p.Y + v.Y * s - 0.5 * G * s * s
+	return y >= GY + NET_H + R + 0.25
+end
+
+-- Like solve, but floats the ball a little higher until it clears the net
+local function solveOver(p, target, tau, maxTau)
+	local v = solve(p, target, tau)
+	while not clearsNet(p, v) and tau < maxTau do
+		tau += 0.05
+		v = solve(p, target, tau)
+	end
+	return v
+end
+
+local function jitter(radius)
+	local a = rng:NextNumber(0, math.pi * 2)
+	local r = radius * math.sqrt(rng:NextNumber())
+	return Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+end
+
+-- A point on team's half: lx across the court, lz = distance from the net
+local function floorPoint(team, lx, lz)
+	return Vector3.new(C.X + lx, FLOOR, C.Z + side(team) * lz)
+end
+
+local function setSpot(team)
+	return floorPoint(team, 0, 4.5) + Vector3.new(0, 6, 0)
+end
+
+-- The teammate a set goes to: people first, then whoever is nearest the net
+local function partnerOf(slot)
+	local best, bestScore = nil, -math.huge
+	for _, s in teams[slot.team].slots do
+		if s ~= slot and s.root then
+			local score = (s.isAI and 0 or 100) - math.abs(s.root.Position.Z - C.Z)
+			if score > bestScore then
+				best, bestScore = s, score
+			end
+		end
+	end
+	return best or slot
+end
+
+local function attackSpot(team, attacker)
+	local lx = 6
+	if attacker and attacker.root then
+		lx = math.clamp(attacker.root.Position.X - C.X, -HALF_W + 3, HALF_W - 3)
+		if attacker.isAI then
+			lx = (lx >= 0 and 1 or -1) * 6
+		end
+	end
+	return floorPoint(team, lx, 3.5) + Vector3.new(0, 9.5 - R, 0)
+end
+
+-- Keeps an aim point on the other half, at most `margin` studs past the lines
+local function clampToOpp(team, aim, margin)
+	local s = side(3 - team)
+	local lx = math.clamp(aim.X - C.X, -HALF_W - margin, HALF_W + margin)
+	local lz = (aim.Z - C.Z) * s
+	if lz < 0 then
+		lz = HALF_L * 0.55
+	end
+	lz = math.clamp(lz, 2, HALF_L + margin)
+	return Vector3.new(C.X + lx, FLOOR, C.Z + s * lz)
+end
+
+local function randomOpp(team, margin)
+	return floorPoint(3 - team, rng:NextNumber(-HALF_W + margin, HALF_W - margin), rng:NextNumber(margin + 2, HALF_L - margin))
+end
+
+-- Picks an open spot on the other half, away from the defenders
+local function smartTarget(team, margin)
+	local best, bestD = nil, -1
+	for _ = 1, 6 do
+		local pnt = randomOpp(team, margin)
+		local d = 99
+		for _, s in teams[3 - team].slots do
+			if s.root then
+				d = math.min(d, flatDist(s.root.Position, pnt))
+			end
+		end
+		if d > bestD then
+			best, bestD = pnt, d
+		end
+	end
+	return best
+end
+
+---------------------------------------------------------------- rules
+
+local function nextTouchNo(team)
+	if ball.lastTeam == team then
+		return ball.touches + 1
+	end
+	return 1
+end
+
+local function awardPoint(winner, reason)
+	if not ball.live then
+		return
+	end
+	ball.live = false
+	local w, l = teams[winner], teams[3 - winner]
+	w.score += 1
+	if servingTeam ~= winner then
+		servingTeam = winner
+		w.serveIndex = w.serveIndex % TEAM_SIZE + 1
+	end
+	local names = Config.TEAM_NAMES
+	if w.score >= Config.POINTS_TO_WIN and w.score - l.score >= Config.WIN_BY then
+		w.sets += 1
+		if w.sets >= Config.SETS_TO_WIN then
+			phase, phaseUntil = "matchover", now() + 9
+			banner(names[winner] .. " WIN", w.score .. " - " .. l.score .. "   ·   new match soon", winner)
+		else
+			phase, phaseUntil = "setover", now() + 5
+			banner(names[winner] .. " TAKE THE SET", w.score .. " - " .. l.score, winner)
+		end
+	else
+		phase, phaseUntil = "point", now() + 2.6
+		banner(names[winner] .. " POINT", reason, winner)
+	end
+	sendState()
+end
+
+-- Can this player play the ball from here? Returns ok and a timing quality 0..1.
+local function reachCheck(slot, kind, rootPos, bp, airborne, t)
+	if (bp.Z - C.Z) * side(slot.team) < -1.5 then
+		return false -- the ball is over the other side
+	end
+	local d = bp - rootPos
+	local flat = Vector3.new(d.X, 0, d.Z).Magnitude
+	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5)
+	if flat > reach then
+		return false
+	end
+	local lo, hi, ideal
+	if kind == "spike" or kind == "tip" then
+		if not airborne then
+			return false
+		end
+		lo, hi, ideal = -2.5, 8, 3
+	elseif kind == "set" then
+		lo, hi, ideal = -2, 7, 3
+	else
+		lo, hi, ideal = -3.5, 5, 0
+	end
+	if d.Y < lo or d.Y > hi then
+		return false
+	end
+	local q = 1 - (flat / reach) * 0.45 - math.clamp(math.abs(d.Y - ideal) / 6, 0, 1) * 0.35
+	if kind == "bump" then
+		local speed = ballVel(t).Magnitude
+		if speed > 45 then
+			q -= math.min((speed - 45) / 90, 0.35) -- hard spikes are harder to pass
+		end
+	end
+	return true, math.clamp(q, 0.05, 1)
+end
+
+-- Works out where a touch sends the ball
+local function shotFor(slot, kind, p, aim, q, touchNo)
+	local team = slot.team
+	if (kind == "bump" or kind == "set") and touchNo >= 3 then
+		-- third touch has to go over
+		local target = (aim and clampToOpp(team, aim, 0) or randomOpp(team, 4)) + jitter((1 - q) * 8)
+		return solveOver(p, target, 1.25, 2.2), "over"
+	elseif kind == "bump" then
+		return solve(p, setSpot(team) + jitter((1 - q) * 9), 1.25), "bump"
+	elseif kind == "set" then
+		return solve(p, attackSpot(team, partnerOf(slot)) + jitter((1 - q) * 6), 1.15), "set"
+	elseif kind == "tip" then
+		local target = aim and clampToOpp(team, aim, 0)
+			or floorPoint(3 - team, rng:NextNumber(-HALF_W + 3, HALF_W - 3), rng:NextNumber(3, 9))
+		return solveOver(p, target + jitter((1 - q) * 3), 0.8, 1.6), "tip"
+	end
+	local target = clampToOpp(team, aim or randomOpp(team, 3), 3) + jitter((1 - q) * 7)
+	local speed = slot.isAI and AI.spike or (62 + 26 * q)
+	local flat = Vector3.new(target.X - p.X, 0, target.Z - p.Z).Magnitude
+	return solveOver(p, target, math.max(flat / speed, 0.28), 1.3), "spike"
+end
+
+local function touch(slot, kind, p, t, aim, q)
+	local team = slot.team
+	local n = nextTouchNo(team)
+	if TEAM_SIZE > 1 and ball.lastSlot == slot then
+		awardPoint(3 - team, "DOUBLE TOUCH")
+		return false
+	end
+	if n > 3 then
+		awardPoint(3 - team, "FOUR HITS")
+		return false
+	end
+	local v, shot = shotFor(slot, kind, p, aim, q, n)
+	ball.touches, ball.lastTeam, ball.lastSlot, ball.lastKind = n, team, slot, shot
+	slot.lastTouch = now()
+	launch(p, v, t)
+	remote:FireAllClients("fx", "hit", p, { kind = shot, q = q, user = slot.player and slot.player.UserId or 0 })
+	sendState()
+	return true
+end
+
+-- Someone on `team` jumping at the net in front of the ball?
+local function findBlocker(team, p)
+	local s = side(team)
+	for _, sl in teams[team].slots do
+		local hrp = sl.root
+		if hrp and sl.humanoid then
+			local rp = hrp.Position
+			local depth = (rp.Z - C.Z) * s
+			local airborne = rp.Y > standHeight(sl) + 1
+			if airborne and depth > -0.5 and depth < 5 and math.abs(rp.X - p.X) < 3.8 and p.Y < rp.Y + 5.5 and p.Y > rp.Y - 1 then
+				if not (sl.isAI and rng:NextNumber() > AI.blockWin) then
+					return sl
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function doBlock(blocker, p, v, t)
+	local back = -side(blocker.team) -- towards the attackers
+	local np, nv
+	if rng:NextNumber() < 0.6 then
+		-- stuff block: straight back down on the attackers
+		np = Vector3.new(p.X, p.Y, C.Z + back * (R + 0.3))
+		nv = Vector3.new(v.X * 0.2 + rng:NextNumber(-4, 4), -6, back * rng:NextNumber(10, 18))
+	else
+		-- soft block: pops up on the blockers' side, still playable
+		np = Vector3.new(p.X, p.Y, C.Z - back * (R + 0.3))
+		nv = Vector3.new(rng:NextNumber(-3, 3), 20, -back * rng:NextNumber(5, 10))
+	end
+	-- a block isn't one of the three touches, and the blocker may play the ball next
+	ball.lastTeam, ball.lastSlot, ball.touches, ball.lastKind = blocker.team, nil, 0, "block"
+	launch(np, nv, t, true)
+	remote:FireAllClients("fx", "block", np, {})
+	sendState()
+end
+
+local function onNet(t)
+	local p, v = ballPos(t), ballVel(t)
+	local into = v.Z < 0 and 2 or 1 -- the team whose half the ball is heading into
+	local s = side(into)
+	if math.abs(p.X - C.X) > HALF_W + 0.5 then
+		ball.netDone = true
+		if ball.live then
+			awardPoint(3 - ball.lastTeam, "OUTSIDE THE ANTENNA")
+		end
+		return
+	end
+	local h = p.Y - GY
+	if h < NET_H - R then
+		-- into the net: it drops back on the side it came from
+		local np = Vector3.new(p.X, p.Y, C.Z - s * (R + 0.15))
+		local nv = Vector3.new(v.X * 0.25, math.min(v.Y, 0) * 0.2 - 2, -s * math.abs(v.Z) * 0.15)
+		launch(np, nv, t, true, true)
+		ball.netHit = true
+		remote:FireAllClients("fx", "net", np, {})
+		return
+	end
+	if ball.live and ball.lastKind == "spike" then
+		local blocker = findBlocker(into, p)
+		if blocker then
+			doBlock(blocker, p, v, t)
+			return
+		end
+	end
+	if h < NET_H + R then
+		-- clips the tape and dribbles over
+		local np = Vector3.new(p.X, GY + NET_H + R, C.Z + s * 0.05)
+		local nv = Vector3.new(v.X * 0.6, math.abs(v.Y) * 0.3 + 3, v.Z * 0.45)
+		launch(np, nv, t, true, true)
+		remote:FireAllClients("fx", "net", np, {})
+		return
+	end
+	ball.netDone = true
+end
+
+local function onLand(t)
+	local p, v = ballPos(t), ballVel(t)
+	local landP = Vector3.new(p.X, FLOOR, p.Z)
+	if ball.live then
+		local lx, lz = p.X - C.X, p.Z - C.Z
+		local inside = math.abs(lx) <= HALF_W + R * 0.5 and math.abs(lz) <= HALF_L + R * 0.5
+		if inside then
+			local winner = lz > 0 and 2 or 1
+			local reason = "IN"
+			if ball.lastTeam == winner then
+				if ball.lastKind == "serve" then
+					reason = "ACE"
+				elseif ball.lastKind == "spike" then
+					reason = "KILL"
+				elseif ball.lastKind == "block" then
+					reason = "BLOCK"
+				elseif ball.lastKind == "tip" then
+					reason = "TIP"
+				end
+			else
+				-- it fell on the side of the team that touched it last
+				reason = ball.netHit and "INTO THE NET" or "DROPPED"
+			end
+			awardPoint(winner, reason)
+		else
+			awardPoint(3 - ball.lastTeam, "OUT")
+		end
+		remote:FireAllClients("fx", "land", landP, { inside = inside })
+	end
+	if ball.bounces < 2 and math.abs(v.Y) > 6 then
+		ball.bounces += 1
+		launch(landP, Vector3.new(v.X * 0.45, math.abs(v.Y) * 0.4, v.Z * 0.45), t, ball.netDone, true)
+	else
+		ball.mode = "rest"
+		ball.restPos = landP
+		sendBall()
+	end
+end
+
+-- Moves the ball's story forward to time t, handling the net and the floor in order
+local function stepBall(t)
+	for _ = 1, 6 do
+		if ball.mode ~= "fly" then
+			return
+		end
+		local tl, tn = landTime(), netTime()
+		if tn < tl and tn <= t then
+			onNet(tn)
+		elseif tl <= t then
+			onLand(tl)
+		else
+			return
+		end
+	end
+end
+
+local function doServe(slot, aim, power, airborne, rootPos)
+	local team = slot.team
+	local s = side(team)
+	local p = rootPos + Vector3.new(0, airborne and 3.2 or 2.6, -s * 1.2)
+	if (p.Z - C.Z) * s < HALF_L + 0.5 then
+		p = Vector3.new(p.X, p.Y, C.Z + s * (HALF_L + 0.5)) -- serve from behind the end line
+	end
+	p = Vector3.new(math.clamp(p.X, C.X - HALF_W, C.X + HALF_W), p.Y, p.Z)
+	if power ~= power then
+		power = 0.5
+	end
+	power = math.clamp(power, 0, 1)
+	local target = clampToOpp(team, aim, 2)
+	if power > 0.9 then
+		-- over-hit: it sails long
+		local dir = Vector3.new(target.X - p.X, 0, target.Z - p.Z).Unit
+		target += dir * (power - 0.9) * 110
+	end
+	-- the green zone (65-90%) is the most accurate
+	if power < 0.65 then
+		target += jitter(1.5 + (0.65 - power) * 5)
+	else
+		target += jitter(0.8 + math.max(power - 0.9, 0) * 10)
+	end
+	local tau = 1.7 + ((airborne and 0.8 or 0.95) - 1.7) * power
+	local v
+	if power < 0.15 then
+		-- under-hit: straight into the net
+		v = solve(p, Vector3.new(target.X, GY + NET_H - 2.5, C.Z), 1.1)
+	else
+		v = solveOver(p, target, tau, 2.2)
+	end
+	ball.live = true
+	ball.lastTeam, ball.lastSlot, ball.lastKind, ball.touches = team, slot, "serve", 0
+	ball.holder = nil
+	phase = "rally"
+	launch(p, v, now())
+	remote:FireAllClients("fx", "hit", p, { kind = "serve", q = 1, user = slot.player and slot.player.UserId or 0 })
+	sendState()
+end
+
+---------------------------------------------------------------- match flow
+
+function currentServer()
+	local team = teams[servingTeam]
+	return team.slots[math.max(team.serveIndex, 1)]
+end
+
+function sendState(plr)
+	local srv = (phase == "serve") and currentServer() or nil
+	local roster = { {}, {} }
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.player then
+				table.insert(roster[t], s.player.UserId)
+			end
+		end
+	end
+	local data = {
+		phase = phase,
+		score = { teams[1].score, teams[2].score },
+		sets = { teams[1].sets, teams[2].sets },
+		serving = servingTeam,
+		server = srv and srv.player and srv.player.UserId or 0,
+		touches = ball.touches,
+		touchTeam = ball.lastTeam,
+		roster = roster,
+		deadline = serveDeadline,
+	}
+	if plr then
+		remote:FireClient(plr, "state", data)
+	else
+		remote:FireAllClients("state", data)
+	end
+end
+
+function setupServe()
+	phase = "serve"
+	local srv = currentServer()
+	ball.live = false
+	ball.mode = "hold"
+	ball.holder = srv
+	ball.lastTeam, ball.lastSlot, ball.lastKind, ball.touches = 0, nil, nil, 0
+	ball.id += 1
+	ball.restPos = serveSpot(srv) + Vector3.new(0, 3, 0)
+	serveAt = now() + rng:NextNumber(1.4, 2.4)
+	serveDeadline = now() + Config.SERVE_TIME
+	for t = 1, 2 do
+		teams[t].brain = {}
+	end
+	placeSlot(srv, serveSpot(srv))
+	srv.ai.jumpServe = rng:NextNumber() < AI.jumpServe
+	srv.ai.serveJumped = false
+	sendBall()
+	sendState()
+end
+
+local matchNo = 0
+local function startMatch()
+	matchNo += 1
+	servingTeam = (matchNo % 2 == 1) and 1 or 2 -- take turns serving first
+	for t = 1, 2 do
+		teams[t].score, teams[t].sets = 0, 0
+		teams[t].serveIndex = (t == servingTeam) and 1 or 0
+		for _, s in teams[t].slots do
+			placeSlot(s, homeSpot(s))
+		end
+	end
+	setupServe()
+	local format = Config.SETS_TO_WIN > 1 and ("BEST OF " .. (Config.SETS_TO_WIN * 2 - 1) .. " SETS") or "ONE SET"
+	banner("FIRST TO " .. Config.POINTS_TO_WIN, format, 0)
+end
+
+local function aiServe(slot, jumped)
+	local power = rng:NextNumber(AI.serveLo, AI.serveHi)
+	if rng:NextNumber() < AI.fault then
+		power = rng:NextNumber() < 0.5 and 0.05 or 0.99
+	end
+	doServe(slot, smartTarget(slot.team, AI.margin + 1), power, jumped == true, slot.root.Position)
+end
+
+local function updateMatch(t)
+	if phase == "point" and t >= phaseUntil then
+		setupServe()
+	elseif phase == "setover" and t >= phaseUntil then
+		teams[1].score, teams[2].score = 0, 0
+		setupServe()
+	elseif phase == "matchover" and t >= phaseUntil then
+		startMatch()
+	elseif phase == "serve" then
+		local srv = currentServer()
+		if srv.root then
+			if srv.isAI and t >= serveAt then
+				if srv.ai.jumpServe and not srv.ai.serveJumped and srv.humanoid then
+					-- jump serve: leave the ground, hit it a moment later
+					srv.ai.serveJumped = true
+					srv.humanoid.Jump = true
+					serveAt = t + 0.25
+				else
+					aiServe(srv, srv.ai.serveJumped)
+				end
+			elseif not srv.isAI and t >= serveDeadline then
+				doServe(srv, floorPoint(3 - srv.team, 0, HALF_L * 0.5), 0.5, false, srv.root.Position)
+			end
+		end
+	end
+end
+
+---------------------------------------------------------------- AI
+
+local function face(slot, target)
+	local hrp = slot.root
+	local look = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
+	if look.Magnitude > 0.5 then
+		hrp.CFrame = hrp.CFrame:Lerp(CFrame.lookAt(hrp.Position, hrp.Position + look), 0.2)
+	end
+end
+
+local function moveSlot(slot, order, t, lookAt)
+	local hum, hrp, mem = slot.humanoid, slot.root, slot.ai
+	local grounded = hum.FloorMaterial ~= Enum.Material.Air
+	if order.hold then
+		if mem.goal then
+			hum:MoveTo(hrp.Position)
+			mem.goal = nil
+		end
+		if grounded then
+			face(slot, lookAt)
+		end
+		return
+	end
+	local s = side(slot.team)
+	local lz = math.clamp((order.pos.Z - C.Z) * s, 1.4, HALF_L + 8)
+	local lx = math.clamp(order.pos.X - C.X, -HALF_W - 8, HALF_W + 8)
+	local pos = Vector3.new(C.X + lx, GY, C.Z + s * lz)
+	hum.WalkSpeed = AI.speed + (order.run and 3 or 0)
+	if flatDist(hrp.Position, pos) > 0.9 then
+		if not mem.goal or flatDist(mem.goal, pos) > 0.6 or t - (mem.moveAt or 0) > 2 then
+			hum:MoveTo(pos)
+			mem.goal, mem.moveAt = pos, t
+		end
+	else
+		if mem.goal then
+			hum:MoveTo(hrp.Position)
+			mem.goal = nil
+		end
+		if grounded then
+			face(slot, lookAt)
+		end
+	end
+end
+
+local function aiTouch(slot, kind, t)
+	local bp = ballPos(t)
+	local use = kind
+	if kind == "spike" and rng:NextNumber() < 0.15 then
+		use = "tip"
+	end
+	local ok, q = reachCheck(slot, use, slot.root.Position, bp, true, t)
+	if not ok and kind == "spike" then
+		use = "bump"
+		ok, q = reachCheck(slot, use, slot.root.Position, bp, true, t)
+	end
+	if not ok then
+		return
+	end
+	q = math.clamp(q * 0.35 + AI.quality * 0.65 + rng:NextNumber(-0.12, 0.08), 0.1, 1)
+	if use ~= "spike" and rng:NextNumber() < AI.shank then
+		q = 0.08 -- shanked pass
+	end
+	local aim = nil
+	if use == "spike" then
+		aim = smartTarget(slot.team, AI.margin)
+		if rng:NextNumber() < AI.attackErr then
+			-- attack error: just past a line
+			local opp = 3 - slot.team
+			if rng:NextNumber() < 0.5 then
+				local sx = rng:NextNumber() < 0.5 and -1 or 1
+				aim = floorPoint(opp, sx * (HALF_W + rng:NextNumber(1.5, 3)), rng:NextNumber(6, HALF_L - 2))
+			else
+				aim = floorPoint(opp, rng:NextNumber(-HALF_W + 2, HALF_W - 2), HALF_L + rng:NextNumber(1.5, 3))
+			end
+		end
+	elseif nextTouchNo(slot.team) >= 3 then
+		aim = randomOpp(slot.team, AI.margin + 2)
+	end
+	touch(slot, use, bp, t, aim, q)
+end
+
+-- Decides what each AI on a team does while the ball is in play
+local function planRally(team, t, brain)
+	local orders = {}
+	local tm = teams[team]
+	local s = side(team)
+	local n = nextTouchNo(team)
+	local land = ballPos(landTime())
+	local mine = (land.Z - C.Z) * s > 0 and n <= 3
+	if mine and ball.lastTeam ~= team then
+		local out = math.abs(land.X - C.X) > HALF_W + 1.5 or math.abs(land.Z - C.Z) > HALF_L + 1.5
+		if out then
+			if brain.letGoId ~= ball.id then
+				brain.letGoId = ball.id
+				brain.letGo = rng:NextNumber() < AI.letGo
+			end
+			if brain.letGo then
+				mine = false
+			end
+		end
+	end
+
+	if mine then
+		-- choose the shot and the player once per flight
+		if brain.planId ~= ball.id then
+			brain.planId = ball.id
+			local kind, h = "bump", GY + 3
+			if n == 2 then
+				kind, h = "set", GY + 6.2
+			elseif n == 3 then
+				kind, h = "spike", GY + 9.5
+			end
+			local tc = heightTime(h)
+			if kind == "spike" and (not tc or (ballPos(tc).Z - C.Z) * s > 12) then
+				kind, h = "bump", GY + 3 -- too low or too deep to attack: free ball
+				tc = heightTime(h)
+			elseif kind == "set" and not tc then
+				kind, h = "bump", GY + 3
+				tc = heightTime(h)
+			end
+			tc = math.max(tc or t, t)
+			local cp = ballPos(tc)
+			local who, bestD = nil, math.huge
+			for _, sl in tm.slots do
+				if sl.root and not (TEAM_SIZE > 1 and ball.lastSlot == sl) then
+					local d = flatDist(sl.root.Position, cp)
+					if not sl.isAI then
+						d -= 3 -- leave it to a nearby person
+					end
+					if d < bestD then
+						who, bestD = sl, d
+					end
+				end
+			end
+			brain.kind, brain.tc, brain.cp, brain.who = kind, tc, cp, who
+			if who and who.player then
+				remote:FireClient(who.player, "cue", (n == 3 and kind == "bump") and "over" or kind, tc)
+			end
+		end
+		local who, kind, tc, cp = brain.who, brain.kind, brain.tc, brain.cp
+		if who and who.isAI and who.root and who.humanoid then
+			local stand = Vector3.new(cp.X, GY, cp.Z)
+			if kind == "spike" then
+				stand += Vector3.new(0, 0, s * 1.0)
+			end
+			orders[who] = { pos = stand, run = true }
+			if kind == "spike" and who.ai.jumpId ~= ball.id and tc - t < 0.32 and flatDist(who.root.Position, cp) < 4.5 then
+				who.ai.jumpId = ball.id
+				who.humanoid.Jump = true
+			end
+			if t >= tc - 0.05 then
+				aiTouch(who, kind, t)
+			end
+		end
+		-- teammates get ready for the next touch
+		local helpers = {}
+		for _, sl in tm.slots do
+			if sl.isAI and sl.root and sl ~= who then
+				table.insert(helpers, sl)
+			end
+		end
+		if #helpers > 0 and n == 1 then
+			local spot = setSpot(team)
+			table.sort(helpers, function(a, b)
+				return flatDist(a.root.Position, spot) < flatDist(b.root.Position, spot)
+			end)
+			orders[helpers[1]] = { pos = Vector3.new(spot.X, GY, spot.Z), run = true }
+		elseif n == 2 then
+			for _, sl in helpers do
+				local lx = (sl.root.Position.X - C.X >= 0) and 6 or -6
+				orders[sl] = { pos = Vector3.new(C.X + lx, GY, C.Z + s * 10) }
+			end
+		end
+	elseif ball.lastTeam == 3 - team and ball.touches == 2 and ball.lastKind == "set" then
+		-- the other team has set up an attack: maybe put up a block
+		local tco = heightTime(GY + 9.5)
+		local cpo = tco and ballPos(tco)
+		if cpo and math.abs(cpo.Z - C.Z) < 9 then
+			if brain.blockId ~= ball.id then
+				brain.blockId = ball.id
+				brain.blockGo = rng:NextNumber() < AI.blockTry
+			end
+			if brain.blockGo then
+				local blk, bestZ = nil, math.huge
+				for _, sl in tm.slots do
+					if sl.isAI and sl.root and sl.humanoid then
+						local z = math.abs(sl.root.Position.Z - C.Z)
+						if z < bestZ then
+							blk, bestZ = sl, z
+						end
+					end
+				end
+				if blk then
+					orders[blk] = { pos = Vector3.new(cpo.X, GY, C.Z + s * 1.6), run = true }
+					if blk.ai.jumpId ~= ball.id and tco - t < 0.24 and math.abs(blk.root.Position.X - cpo.X) < 3.5 then
+						blk.ai.jumpId = ball.id
+						blk.humanoid.Jump = true
+					end
+				end
+			end
+		end
+	end
+	return orders
+end
+
+local function aiTeam(team, t)
+	local tm = teams[team]
+	local brain = tm.brain
+	if not brain then
+		brain = {}
+		tm.brain = brain
+	end
+	local lookAt = ball.restPos
+	if ball.mode == "fly" then
+		lookAt = ballPos(t)
+	elseif ball.mode == "hold" and ball.holder and ball.holder.root then
+		lookAt = ball.holder.root.Position
+	end
+
+	local orders = {}
+	if phase == "serve" then
+		local srv = currentServer()
+		for _, sl in tm.slots do
+			if sl == srv then
+				orders[sl] = { hold = true }
+			else
+				orders[sl] = { pos = homeSpot(sl, servingTeam == team and "serving" or "receive") }
+			end
+		end
+	elseif phase == "rally" and ball.mode == "fly" and ball.live then
+		if brain.seenId ~= ball.id then
+			brain.seenId, brain.seenAt = ball.id, t
+		end
+		if t - brain.seenAt < AI.react then
+			orders = brain.orders or orders -- still reacting: carry on as before
+		else
+			orders = planRally(team, t, brain)
+		end
+	end
+	brain.orders = orders
+	for _, sl in tm.slots do
+		if sl.isAI and sl.humanoid and sl.root then
+			moveSlot(sl, orders[sl] or { pos = homeSpot(sl) }, t, lookAt)
+			animateBot(sl)
+		end
+	end
+end
+
+---------------------------------------------------------------- input from players
+
+remote.OnServerEvent:Connect(function(plr, action, data)
+	if action == "sync" then
+		sendState(plr)
+		sendBall(plr)
+		return
+	end
+	local slot = slotOfPlayer[plr]
+	if not slot or not slot.root or not slot.humanoid or type(data) ~= "table" then
+		return
+	end
+	local t = now()
+	local rootPos = slot.root.Position
+	if typeof(data.root) == "Vector3" and (data.root - rootPos).Magnitude < 14 then
+		rootPos = data.root -- what the player saw, within reason
+	end
+	local aim = typeof(data.aim) == "Vector3" and data.aim or nil
+	local air = data.air == true and rootPos.Y > standHeight(slot) + 0.3
+
+	if action == "serve" then
+		if phase == "serve" and currentServer() == slot and ball.mode == "hold" then
+			local fallback = floorPoint(3 - slot.team, 0, HALF_L * 0.5)
+			doServe(slot, aim or fallback, tonumber(data.power) or 0.5, air, rootPos)
+		end
+	elseif action == "hit" then
+		if phase ~= "rally" or not ball.live or ball.mode ~= "fly" then
+			return
+		end
+		if t - (slot.lastTouch or 0) < 0.45 then
+			return
+		end
+		local kind = data.kind
+		if kind ~= "bump" and kind ~= "set" and kind ~= "spike" then
+			return
+		end
+		if kind == "spike" and not air then
+			kind = "bump"
+		end
+		-- judge the touch at the moment the player clicked (up to 0.3 s ago)
+		local ht = t
+		if data.id == ball.id and type(data.t) == "number" and t - data.t >= 0 and t - data.t < 0.3 and data.t >= ball.t0 then
+			ht = data.t
+		end
+		local bp = ballPos(ht)
+		local ok, q = reachCheck(slot, kind, rootPos, bp, air, ht)
+		if not ok and kind == "spike" then
+			kind = "set"
+			ok, q = reachCheck(slot, kind, rootPos, bp, air, ht)
+		end
+		if not ok then
+			remote:FireClient(plr, "miss")
+			return
+		end
+		touch(slot, kind, bp, ht, aim, q)
+	elseif action == "dive" then
+		slot.diveUntil = t + 0.7
+	end
+end)
+
+---------------------------------------------------------------- start
+
+Players.PlayerAdded:Connect(addPlayer)
+Players.PlayerRemoving:Connect(removePlayer)
+for _, plr in Players:GetPlayers() do
+	task.spawn(addPlayer, plr)
+end
+
+-- controls and HUD for everyone
+local function giveClient(plr)
+	local holder = Instance.new("ScreenGui")
+	holder.Name = "ArenaVolleyballLoader"
+	holder.ResetOnSpawn = false
+	clientTemplate:Clone().Parent = holder
+	holder.Parent = plr:WaitForChild("PlayerGui")
+end
+clientTemplate:Clone().Parent = StarterPlayer:WaitForChild("StarterPlayerScripts")
+for _, plr in Players:GetPlayers() do
+	task.spawn(giveClient, plr)
+end
+
+-- AI bodies for every empty spot, built at the same time
+local building = 0
+for t = 1, 2 do
+	for _, sl in teams[t].slots do
+		if sl.isAI and not sl.model then
+			building += 1
+			task.spawn(function()
+				makeBot(sl)
+				building -= 1
+			end)
+		end
+	end
+end
+local waited = 0
+while building > 0 and waited < 10 do
+	waited += task.wait(0.1)
+end
+
+startMatch()
+
+local lastError = 0
+RunService.Heartbeat:Connect(function()
+	local ok, err = pcall(function()
+		local t = now()
+		stepBall(t)
+		updateMatch(t)
+		aiTeam(1, t)
+		aiTeam(2, t)
+	end)
+	if not ok and os.clock() - lastError > 3 then
+		lastError = os.clock()
+		warn("[Arena Volleyball] " .. tostring(err))
+	end
+end)
+
+print("[Arena Volleyball] Ready. Change the rules in ArenaVolleyball > Config.")
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX2">
+			<Properties>
+				<string name="Name">Config</string>
+				<ProtectedString name="Source"><![CDATA[-- ARENA VOLLEYBALL settings. Change a value, then press Play.
+return {
+	TEAM_SIZE = 2, -- players per side (1 to 4). Empty spots are played by AI.
+	POINTS_TO_WIN = 15, -- points needed to win a set
+	WIN_BY = 2,
+	SETS_TO_WIN = 1, -- 1 = one set, 2 = best of three
+	AI_LEVEL = 2, -- 1 rookie, 2 pro, 3 legend
+
+	TEAM_NAMES = { "HOME", "AWAY" },
+	TEAM_COLORS = { Color3.fromRGB(70, 140, 255), Color3.fromRGB(255, 96, 76) },
+
+	-- The court is built here, on the ground below this point.
+	COURT_CENTER = Vector3.new(0, 0, 90),
+
+	-- Sizes in studs (roughly 3 studs to a metre)
+	COURT_LENGTH = 54,
+	COURT_WIDTH = 27,
+	NET_HEIGHT = 7.5,
+
+	GRAVITY = 48, -- ball gravity: lower is floatier
+	BALL_RADIUS = 0.8,
+	REACH = 6.5, -- how far from your body you can play the ball
+	SERVE_TIME = 12, -- seconds before a serve is made for you
+}
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="LocalScript" referent="RBX3">
+			<Properties>
+				<string name="Name">Client</string>
+				<ProtectedString name="Source"><![CDATA[-- ARENA VOLLEYBALL (client): draws the ball, reads your controls, shows the HUD.
+-- The server copies this script to every player; you don't need to move it.
+
+if _G.ArenaVolleyballClient then
+	return
+end
+_G.ArenaVolleyballClient = true
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local shared = ReplicatedStorage:WaitForChild("ArenaVolleyball")
+local remote = shared:WaitForChild("Remote")
+local Config = require(shared:WaitForChild("Config"))
+
+local C = shared:GetAttribute("Center")
+while not C do
+	task.wait(0.1)
+	C = shared:GetAttribute("Center")
+end
+local GY = C.Y
+local G = Config.GRAVITY
+local R = Config.BALL_RADIUS
+local REACH = Config.REACH
+local FLOOR = GY + R
+local COLORS = Config.TEAM_COLORS
+local NAMES = Config.TEAM_NAMES
+
+local function serverNow()
+	return workspace:GetServerTimeNow()
+end
+
+---------------------------------------------------------------- ball, shadow and landing marker (only you see these)
+
+local world = Instance.new("Folder")
+world.Name = "VolleyballLocal"
+world.Parent = workspace
+
+local function worldPart(props)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = Enum.Material.SmoothPlastic
+	for key, value in props do
+		p[key] = value
+	end
+	p.Parent = world
+	return p
+end
+
+local FLAT = CFrame.Angles(0, 0, math.pi / 2) -- turns a cylinder into a disc on the floor
+
+local ballPart = worldPart({
+	Name = "Ball",
+	Shape = Enum.PartType.Ball,
+	Size = Vector3.one * (R * 2),
+	Color = Color3.fromRGB(255, 214, 64),
+	CastShadow = true,
+})
+-- two blue bands so you can see the ball spin
+local stripes = {}
+local STRIPE_OFFSET = { CFrame.new(), CFrame.Angles(0, math.pi / 2, 0) }
+for i = 1, 2 do
+	stripes[i] = worldPart({
+		Name = "Band",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.16, R * 2 + 0.03, R * 2 + 0.03),
+		Color = Color3.fromRGB(40, 90, 210),
+	})
+end
+local shadow = worldPart({
+	Name = "BallShadow",
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(0.04, 2, 2),
+	Color = Color3.new(0, 0, 0),
+	Transparency = 0.6,
+})
+local marker = worldPart({
+	Name = "LandingMarker",
+	Shape = Enum.PartType.Cylinder,
+	Size = Vector3.new(0.03, 4.4, 4.4),
+	Color = Color3.new(1, 1, 1),
+	Material = Enum.Material.Neon,
+	Transparency = 1,
+})
+
+local reachGlow = Instance.new("Highlight")
+reachGlow.Adornee = ballPart
+reachGlow.FillTransparency = 1
+reachGlow.OutlineColor = Color3.new(1, 1, 1)
+reachGlow.OutlineTransparency = 0
+reachGlow.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+reachGlow.Enabled = false
+reachGlow.Parent = ballPart
+
+local function burst(pos, color, size)
+	local p = worldPart({
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.one,
+		CFrame = CFrame.new(pos),
+		Color = color,
+		Material = Enum.Material.Neon,
+		Transparency = 0.35,
+	})
+	TweenService:Create(p, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = Vector3.one * size,
+		Transparency = 1,
+	}):Play()
+	task.delay(0.35, function()
+		p:Destroy()
+	end)
+end
+
+local function ripple(pos, color)
+	local p = worldPart({
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(0.05, 1, 1),
+		CFrame = CFrame.new(pos.X, GY + 0.06, pos.Z) * FLAT,
+		Color = color,
+		Material = Enum.Material.Neon,
+		Transparency = 0.3,
+	})
+	TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = Vector3.new(0.05, 7, 7),
+		Transparency = 1,
+	}):Play()
+	task.delay(0.55, function()
+		p:Destroy()
+	end)
+end
+
+---------------------------------------------------------------- HUD
+
+local PANEL = Color3.fromRGB(14, 16, 22)
+local TEXT = Color3.fromRGB(240, 242, 246)
+local DIM = Color3.fromRGB(150, 156, 168)
+local BOLD = Enum.Font.GothamBold
+local MEDIUM = Enum.Font.GothamMedium
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "VolleyballHUD"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local function ui(class, props, parent)
+	local o = Instance.new(class)
+	for key, value in props do
+		o[key] = value
+	end
+	o.Parent = parent
+	return o
+end
+
+local function corner(o, radius)
+	ui("UICorner", { CornerRadius = UDim.new(0, radius) }, o)
+end
+
+local function outline(o)
+	ui("UIStroke", { Color = Color3.new(1, 1, 1), Transparency = 0.86, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
+end
+
+local function label(props, parent)
+	local l = ui("TextLabel", { BackgroundTransparency = 1, TextColor3 = TEXT, Font = MEDIUM, TextSize = 13, Text = "" }, parent)
+	for key, value in props do
+		l[key] = value
+	end
+	return l
+end
+
+-- scoreboard, top centre
+local board = ui("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 10),
+	Size = UDim2.fromOffset(320, 40),
+	BackgroundColor3 = PANEL,
+	BackgroundTransparency = 0.25,
+	BorderSizePixel = 0,
+}, gui)
+corner(board, 8)
+outline(board)
+ui("Frame", { Position = UDim2.new(0, 10, 1, -2), Size = UDim2.new(0.5, -10, 0, 2), BackgroundColor3 = COLORS[1], BorderSizePixel = 0 }, board)
+ui("Frame", { Position = UDim2.new(0.5, 0, 1, -2), Size = UDim2.new(0.5, -10, 0, 2), BackgroundColor3 = COLORS[2], BorderSizePixel = 0 }, board)
+local homeDot = ui("Frame", { Position = UDim2.new(0, 9, 0.5, -3), Size = UDim2.fromOffset(6, 6), BackgroundColor3 = TEXT, BorderSizePixel = 0, Visible = false }, board)
+corner(homeDot, 3)
+local awayDot = ui("Frame", { Position = UDim2.new(1, -15, 0.5, -3), Size = UDim2.fromOffset(6, 6), BackgroundColor3 = TEXT, BorderSizePixel = 0, Visible = false }, board)
+corner(awayDot, 3)
+local homeName = label({ Position = UDim2.fromOffset(20, 0), Size = UDim2.fromOffset(74, 38), Text = NAMES[1], Font = BOLD, TextXAlignment = Enum.TextXAlignment.Left }, board)
+local homeScore = label({ Position = UDim2.fromOffset(94, 0), Size = UDim2.fromOffset(42, 38), Text = "0", Font = BOLD, TextSize = 22, TextXAlignment = Enum.TextXAlignment.Right }, board)
+local midLabel = label({ Position = UDim2.fromOffset(136, 0), Size = UDim2.fromOffset(48, 38), TextSize = 10, TextColor3 = DIM }, board)
+local awayScore = label({ Position = UDim2.fromOffset(184, 0), Size = UDim2.fromOffset(42, 38), Text = "0", Font = BOLD, TextSize = 22, TextXAlignment = Enum.TextXAlignment.Left }, board)
+local awayName = label({ Position = UDim2.fromOffset(226, 0), Size = UDim2.fromOffset(74, 38), Text = NAMES[2], Font = BOLD, TextXAlignment = Enum.TextXAlignment.Right }, board)
+
+-- touches used this possession
+local dotsFrame = ui("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 56), Size = UDim2.fromOffset(44, 8), BackgroundTransparency = 1, Visible = false }, gui)
+local dots = {}
+for i = 1, 3 do
+	dots[i] = ui("Frame", { Position = UDim2.fromOffset((i - 1) * 18, 0), Size = UDim2.fromOffset(8, 8), BackgroundColor3 = TEXT, BackgroundTransparency = 0.75, BorderSizePixel = 0 }, dotsFrame)
+	corner(dots[i], 4)
+end
+
+-- point banner
+local bannerGroup = ui("CanvasGroup", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 72),
+	Size = UDim2.fromOffset(380, 46),
+	BackgroundColor3 = PANEL,
+	BackgroundTransparency = 0.25,
+	BorderSizePixel = 0,
+	GroupTransparency = 1,
+}, gui)
+corner(bannerGroup, 8)
+local bannerAccent = ui("Frame", { Size = UDim2.new(0, 3, 1, 0), BackgroundColor3 = TEXT, BorderSizePixel = 0 }, bannerGroup)
+local bannerTitle = label({ Position = UDim2.fromOffset(0, 6), Size = UDim2.new(1, 0, 0, 20), Font = BOLD, TextSize = 16 }, bannerGroup)
+local bannerSub = label({ Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 14), TextSize = 11, TextColor3 = DIM }, bannerGroup)
+
+-- control hints, bottom centre
+local hint = label({
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -18),
+	Size = UDim2.fromOffset(760, 20),
+	RichText = true,
+	TextTransparency = 0.15,
+	TextStrokeTransparency = 0.75,
+}, gui)
+
+-- "your ball" cue when you should play the next touch
+local cue = label({
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -48),
+	Size = UDim2.fromOffset(420, 22),
+	Font = BOLD,
+	TextSize = 16,
+	RichText = true,
+	TextTransparency = 1,
+	TextStrokeTransparency = 1,
+}, gui)
+
+-- serve power bar
+local powerBar = ui("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -54),
+	Size = UDim2.fromOffset(240, 8),
+	BackgroundColor3 = PANEL,
+	BackgroundTransparency = 0.3,
+	BorderSizePixel = 0,
+	Visible = false,
+}, gui)
+corner(powerBar, 4)
+ui("Frame", { Position = UDim2.fromScale(0.65, 0), Size = UDim2.fromScale(0.25, 1), BackgroundColor3 = Color3.fromRGB(90, 220, 140), BackgroundTransparency = 0.45, BorderSizePixel = 0 }, powerBar)
+local powerFill = ui("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = TEXT, BackgroundTransparency = 0.1, BorderSizePixel = 0 }, powerBar)
+corner(powerFill, 4)
+label({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 0, -3), Size = UDim2.fromOffset(240, 14), Text = "POWER", Font = BOLD, TextSize = 10, TextColor3 = DIM }, powerBar)
+
+-- PERFECT / GOOD / OK / POOR after your touches
+local feedback = label({
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.6),
+	Size = UDim2.fromOffset(200, 24),
+	Font = BOLD,
+	TextSize = 15,
+	TextTransparency = 1,
+	TextStrokeTransparency = 1,
+}, gui)
+
+local function flash(text, color)
+	feedback.Text = text
+	feedback.TextColor3 = color
+	feedback.TextTransparency = 0
+	feedback.TextStrokeTransparency = 0.7
+	feedback.Position = UDim2.fromScale(0.5, 0.6)
+	TweenService:Create(feedback, TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+		Position = UDim2.fromScale(0.5, 0.56),
+	}):Play()
+end
+
+local function showQuality(q)
+	if q >= 0.85 then
+		flash("PERFECT", Color3.fromRGB(120, 255, 170))
+	elseif q >= 0.65 then
+		flash("GOOD", TEXT)
+	elseif q >= 0.4 then
+		flash("OK", DIM)
+	else
+		flash("POOR", Color3.fromRGB(255, 140, 120))
+	end
+end
+
+local bannerToken = 0
+local function showBanner(title, sub, team)
+	bannerToken += 1
+	local token = bannerToken
+	bannerTitle.Text = title
+	bannerSub.Text = sub
+	bannerAccent.BackgroundColor3 = COLORS[team] or TEXT
+	TweenService:Create(bannerGroup, TweenInfo.new(0.2), { GroupTransparency = 0 }):Play()
+	task.delay(2.4, function()
+		if bannerToken == token then
+			TweenService:Create(bannerGroup, TweenInfo.new(0.4), { GroupTransparency = 1 }):Play()
+		end
+	end)
+end
+
+-- touch-screen buttons
+local touchMode = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local function touchButton(text, pos, size)
+	local b = ui("TextButton", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = pos,
+		Size = UDim2.fromOffset(size, size),
+		BackgroundColor3 = PANEL,
+		BackgroundTransparency = 0.35,
+		Text = text,
+		Font = BOLD,
+		TextSize = 13,
+		TextColor3 = TEXT,
+		AutoButtonColor = false,
+		Visible = touchMode,
+	}, gui)
+	corner(b, size / 2)
+	ui("UIStroke", { Color = Color3.new(1, 1, 1), Transparency = 0.7, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+	return b
+end
+local hitButton = touchButton("HIT", UDim2.new(1, -150, 1, -200), 74)
+local setButton = touchButton("SET", UDim2.new(1, -235, 1, -130), 58)
+local diveButton = touchButton("DIVE", UDim2.new(1, -75, 1, -275), 58)
+
+---------------------------------------------------------------- state from the server
+
+local state = {
+	phase = "waiting",
+	score = { 0, 0 },
+	sets = { 0, 0 },
+	serving = 1,
+	server = 0,
+	touches = 0,
+	touchTeam = 0,
+	roster = { {}, {} },
+	deadline = 0,
+}
+local ballState = {
+	id = 0,
+	mode = "rest",
+	p0 = C + Vector3.new(0, R, 0),
+	v0 = Vector3.zero,
+	t0 = 0,
+	rest = C + Vector3.new(0, R, 0),
+}
+
+local function myTeam()
+	for t = 1, 2 do
+		for _, id in state.roster[t] or {} do
+			if id == player.UserId then
+				return t
+			end
+		end
+	end
+	return 0
+end
+
+local function myServe()
+	return state.phase == "serve" and state.server == player.UserId
+end
+
+local function character()
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	return hum, hrp
+end
+
+local function airborne(hum)
+	return hum ~= nil and hum.FloorMaterial == Enum.Material.Air
+end
+
+local function ballAt(t)
+	if ballState.mode == "fly" then
+		local dt = math.max(t - ballState.t0, 0)
+		local p = ballState.p0 + ballState.v0 * dt + Vector3.new(0, -0.5 * G * dt * dt, 0)
+		if p.Y < FLOOR then
+			p = Vector3.new(p.X, FLOOR, p.Z)
+		end
+		return p
+	elseif ballState.mode == "hold" then
+		local holder = ballState.holder
+		local hrp = holder and holder.Parent and holder:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			return (hrp.CFrame * CFrame.new(0.5, 0.4, -1.4)).Position
+		end
+	end
+	return ballState.rest
+end
+
+local function landingPoint()
+	local p0, v0 = ballState.p0, ballState.v0
+	local disc = v0.Y * v0.Y + 2 * G * (p0.Y - FLOOR)
+	if disc < 0 then
+		return nil
+	end
+	local s = (v0.Y + math.sqrt(disc)) / G
+	return p0 + v0 * s + Vector3.new(0, -0.5 * G * s * s, 0)
+end
+
+---------------------------------------------------------------- HUD updates
+
+local lastInput = touchMode and "touch" or "kbm"
+UserInputService.LastInputTypeChanged:Connect(function(inputType)
+	if inputType == Enum.UserInputType.Touch then
+		lastInput = "touch"
+	elseif string.find(inputType.Name, "Gamepad") then
+		lastInput = "pad"
+	elseif inputType == Enum.UserInputType.Keyboard or string.find(inputType.Name, "Mouse") then
+		lastInput = "kbm"
+	end
+end)
+
+local function refreshBoard()
+	homeScore.Text = tostring(state.score[1])
+	awayScore.Text = tostring(state.score[2])
+	homeDot.Visible = state.serving == 1
+	awayDot.Visible = state.serving == 2
+	if Config.SETS_TO_WIN > 1 then
+		midLabel.Text = "SETS " .. state.sets[1] .. "-" .. state.sets[2]
+	else
+		midLabel.Text = "TO " .. Config.POINTS_TO_WIN
+	end
+	local team = myTeam()
+	homeName.TextColor3 = (team == 2) and DIM or TEXT
+	awayName.TextColor3 = (team == 1) and DIM or TEXT
+	local showDots = state.phase == "rally" and state.touchTeam ~= 0 and state.touches > 0
+	dotsFrame.Visible = showDots
+	for i = 1, 3 do
+		local used = showDots and i <= state.touches
+		dots[i].BackgroundColor3 = used and (COLORS[state.touchTeam] or TEXT) or TEXT
+		dots[i].BackgroundTransparency = used and 0 or 0.75
+	end
+end
+
+local function hintText()
+	local team = myTeam()
+	if team == 0 then
+		return "Watching  ·  both teams are full"
+	end
+	if myServe() then
+		local left = math.max(0, math.ceil(state.deadline - serverNow()))
+		local timer = "   <font color=\"#9aa0aa\">" .. left .. "</font>"
+		if lastInput == "touch" then
+			return "<b>HOLD HIT</b> to power up, let go in the green  ·  jump first for a jump serve" .. timer
+		elseif lastInput == "pad" then
+			return "<b>HOLD R2</b> to power up, let go in the green  ·  aim with the camera  ·  <b>A</b> first for a jump serve" .. timer
+		end
+		return "<b>HOLD CLICK</b> to power up, let go in the green  ·  aim with the mouse  ·  <b>SPACE</b> first for a jump serve" .. timer
+	end
+	if state.phase == "rally" then
+		if lastInput == "touch" then
+			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  <b>DIVE</b> to reach"
+		elseif lastInput == "pad" then
+			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>B</b> dive"
+		end
+		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike  ·  <b>Q</b> dive  ·  aim with the mouse"
+	end
+	if state.phase == "serve" then
+		return NAMES[state.serving] .. " to serve"
+	end
+	return ""
+end
+
+-- Swings the camera round behind you, facing the net
+local function lookAtNet()
+	local _, hrp = character()
+	local cam = workspace.CurrentCamera
+	if not hrp or not cam then
+		return
+	end
+	local to = Vector3.new(C.X - hrp.Position.X, 0, C.Z - hrp.Position.Z)
+	if to.Magnitude < 1 then
+		return
+	end
+	to = to.Unit
+	cam.CFrame = CFrame.lookAt(hrp.Position - to * 12 + Vector3.new(0, 5, 0), hrp.Position + to * 10)
+end
+
+player.CharacterAdded:Connect(function()
+	task.delay(0.6, function()
+		if myTeam() ~= 0 then
+			lookAtNet()
+		end
+	end)
+end)
+
+---------------------------------------------------------------- controls
+
+local charging, chargeStart = false, 0
+local lastSend, lastDive, diveUntil = 0, 0, 0
+local cueUntil = 0
+
+local function chargePower()
+	return math.clamp((os.clock() - chargeStart) / 1.2, 0, 1)
+end
+
+-- Where you're aiming on the floor: the mouse, or the middle of the screen on touch / gamepad
+local function aimPoint()
+	local cam = workspace.CurrentCamera
+	local ray
+	if lastInput == "kbm" then
+		local m = UserInputService:GetMouseLocation()
+		ray = cam:ViewportPointToRay(m.X, m.Y)
+	else
+		ray = cam:ViewportPointToRay(cam.ViewportSize.X / 2, cam.ViewportSize.Y * 0.45)
+	end
+	local o, d = ray.Origin, ray.Direction
+	if d.Y < -0.02 then
+		return o + d * ((GY - o.Y) / d.Y)
+	end
+	local flat = Vector3.new(d.X, 0, d.Z)
+	if flat.Magnitude < 1e-3 then
+		flat = Vector3.new(0, 0, -1)
+	end
+	return Vector3.new(o.X, GY, o.Z) + flat.Unit * 40
+end
+
+local function sendHit(kind)
+	if os.clock() - lastSend < 0.3 then
+		return
+	end
+	local hum, hrp = character()
+	if not hrp or state.phase ~= "rally" or ballState.mode ~= "fly" then
+		return
+	end
+	local t = serverNow()
+	local bp = ballAt(t)
+	if Vector3.new(bp.X - hrp.Position.X, 0, bp.Z - hrp.Position.Z).Magnitude > REACH + 5 then
+		return
+	end
+	lastSend = os.clock()
+	local air = airborne(hum) and os.clock() > diveUntil
+	if kind == "spike" and not air then
+		kind = "bump"
+	end
+	remote:FireServer("hit", { kind = kind, aim = aimPoint(), root = hrp.Position, air = air, id = ballState.id, t = t })
+end
+
+local function press()
+	if myServe() then
+		if ballState.mode == "hold" and not charging then
+			charging = true
+			chargeStart = os.clock()
+		end
+		return
+	end
+	local hum = character()
+	if airborne(hum) and os.clock() > diveUntil then
+		sendHit("spike")
+	else
+		sendHit("bump")
+	end
+end
+
+local function release()
+	if not charging then
+		return
+	end
+	charging = false
+	local hum, hrp = character()
+	if not hrp or not myServe() then
+		return
+	end
+	remote:FireServer("serve", { aim = aimPoint(), power = chargePower(), root = hrp.Position, air = airborne(hum) })
+end
+
+local function setBall()
+	if not myServe() then
+		sendHit("set")
+	end
+end
+
+local function dive()
+	local hum, hrp = character()
+	if not hum or not hrp or state.phase ~= "rally" then
+		return
+	end
+	if os.clock() - lastDive < 1.4 or airborne(hum) then
+		return
+	end
+	local dir = hum.MoveDirection
+	if dir.Magnitude < 0.1 then
+		dir = hrp.CFrame.LookVector
+	end
+	dir = Vector3.new(dir.X, 0, dir.Z)
+	if dir.Magnitude < 0.01 then
+		return
+	end
+	lastDive = os.clock()
+	diveUntil = os.clock() + 0.7
+	remote:FireServer("dive", {})
+	hrp.AssemblyLinearVelocity = dir.Unit * 42 + Vector3.new(0, 14, 0)
+	local speed = hum.WalkSpeed
+	task.delay(0.35, function()
+		if hum.Parent then
+			hum.WalkSpeed = 4
+		end
+	end)
+	task.delay(0.9, function()
+		if hum.Parent then
+			hum.WalkSpeed = speed
+		end
+	end)
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+	local key = input.KeyCode
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
+		press()
+	elseif key == Enum.KeyCode.E or key == Enum.KeyCode.ButtonX then
+		setBall()
+	elseif key == Enum.KeyCode.Q or key == Enum.KeyCode.ButtonB then
+		dive()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.KeyCode == Enum.KeyCode.ButtonR2 then
+		release()
+	end
+end)
+
+hitButton.MouseButton1Down:Connect(press)
+hitButton.MouseButton1Up:Connect(release)
+setButton.MouseButton1Down:Connect(setBall)
+diveButton.MouseButton1Down:Connect(dive)
+
+---------------------------------------------------------------- messages from the server
+
+remote.OnClientEvent:Connect(function(kind, a, b, c)
+	if kind == "ball" then
+		ballState = a
+		if a.mode ~= "hold" then
+			charging = false
+		end
+	elseif kind == "state" then
+		local wasServing, hadTeam = myServe(), myTeam() ~= 0
+		state = a
+		if not myServe() then
+			charging = false
+		elseif not wasServing then
+			task.delay(0.35, lookAtNet)
+		end
+		if not hadTeam and myTeam() ~= 0 then
+			task.delay(0.8, lookAtNet)
+		end
+		refreshBoard()
+	elseif kind == "banner" then
+		showBanner(a, b, c)
+	elseif kind == "fx" then
+		if a == "hit" then
+			burst(b, Color3.new(1, 1, 1), 4)
+			if c and c.user == player.UserId and c.kind ~= "serve" then
+				showQuality(c.q or 0.5)
+			end
+		elseif a == "block" then
+			burst(b, Color3.fromRGB(255, 230, 120), 6)
+		elseif a == "net" then
+			burst(b, Color3.fromRGB(200, 220, 255), 3)
+		elseif a == "land" then
+			ripple(b, (c and c.inside) and Color3.new(1, 1, 1) or Color3.fromRGB(255, 110, 90))
+		end
+	elseif kind == "miss" then
+		flash("MISSED", DIM)
+	elseif kind == "cue" then
+		local keys = {
+			kbm = { bump = "CLICK", set = "E", spike = "SPACE + CLICK", over = "CLICK" },
+			pad = { bump = "R2", set = "X", spike = "A + R2", over = "R2" },
+			touch = { bump = "HIT", set = "SET", spike = "JUMP + HIT", over = "HIT" },
+		}
+		local words = { bump = "PASS", set = "SET", spike = "SPIKE", over = "SEND IT OVER" }
+		local key = (keys[lastInput] or keys.kbm)[a] or ""
+		cue.Text = "YOUR BALL  ·  " .. (words[a] or "PLAY IT") .. "  <font color=\"#9aa0aa\">" .. key .. "</font>"
+		cueUntil = (b or serverNow()) + 0.4
+	end
+end)
+
+---------------------------------------------------------------- every frame
+
+local spin = 0
+RunService.RenderStepped:Connect(function(dt)
+	local t = serverNow()
+	local pos = ballAt(t)
+	if ballState.mode == "fly" then
+		spin += dt * math.min(ballState.v0.Magnitude, 60) * 0.3
+	end
+	local cf = CFrame.new(pos) * CFrame.Angles(spin, spin * 0.4, 0)
+	ballPart.CFrame = cf
+	for i, band in stripes do
+		band.CFrame = cf * STRIPE_OFFSET[i]
+	end
+
+	local height = math.max(pos.Y - GY, 0)
+	local d = math.clamp(2.2 - height * 0.06, 0.7, 2.2)
+	shadow.Size = Vector3.new(0.04, d, d)
+	shadow.CFrame = CFrame.new(pos.X, GY + 0.05, pos.Z) * FLAT
+	shadow.Transparency = math.clamp(0.5 + height * 0.025, 0.5, 0.88)
+
+	local live = state.phase == "rally" and ballState.mode == "fly"
+	local land = live and landingPoint()
+	if land then
+		marker.CFrame = CFrame.new(land.X, GY + 0.04, land.Z) * FLAT
+		marker.Transparency = 0.8
+	else
+		marker.Transparency = 1
+	end
+
+	-- white outline on the ball when it's in your reach
+	local glow = false
+	local team = myTeam()
+	if live and team ~= 0 then
+		local hum, hrp = character()
+		if hrp then
+			local off = pos - hrp.Position
+			local flat = Vector3.new(off.X, 0, off.Z).Magnitude
+			local mySide = (pos.Z - C.Z) * (team == 1 and 1 or -1) > -1.5
+			-- same windows the server uses: spike in the air, pass on the ground
+			local lo, hi = -3.5, 5
+			if airborne(hum) then
+				lo, hi = -2.5, 8
+			end
+			glow = mySide and flat <= REACH + 1.2 and off.Y > lo and off.Y < hi
+		end
+	end
+	reachGlow.Enabled = glow
+
+	local cueOn = live and t < cueUntil
+	cue.TextTransparency = cueOn and 0.05 or 1
+	cue.TextStrokeTransparency = cueOn and 0.6 or 1
+
+	if charging then
+		powerBar.Visible = true
+		powerFill.Size = UDim2.fromScale(chargePower(), 1)
+		if os.clock() - chargeStart > 2.2 then
+			release() -- held far too long
+		end
+	else
+		powerBar.Visible = false
+	end
+	local text = hintText()
+	if hint.Text ~= text then
+		hint.Text = text
+	end
+end)
+
+refreshBoard()
+remote:FireServer("sync")
+]]></ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+</roblox>
