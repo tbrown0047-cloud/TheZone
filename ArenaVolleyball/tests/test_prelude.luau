@@ -74,3 +74,4 @@ for t = 1, 2 do
 		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {}, root = nil }
 	end
 end
+pointsToWin = 25

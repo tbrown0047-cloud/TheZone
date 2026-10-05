@@ -23,8 +23,8 @@ local ballState = {
 
 local function myTeam()
 	for t = 1, 2 do
-		for _, id in state.roster[t] or {} do
-			if id == player.UserId then
+		for _, e in state.roster[t] or {} do
+			if e.id == player.UserId then
 				return t
 			end
 		end
@@ -88,55 +88,85 @@ UserInputService.LastInputTypeChanged:Connect(function(inputType)
 	end
 end)
 
-local function refreshBoard()
-	homeScore.Text = tostring(state.score[1])
-	awayScore.Text = tostring(state.score[2])
-	homeDot.Visible = state.serving == 1
-	awayDot.Visible = state.serving == 2
-	if Config.SETS_TO_WIN > 1 then
-		midLabel.Text = "SETS " .. state.sets[1] .. "-" .. state.sets[2]
-	else
-		midLabel.Text = "TO " .. Config.POINTS_TO_WIN
+local POSITION_NAMES = { "RIGHT BACK · SERVER", "RIGHT FRONT", "MIDDLE FRONT", "LEFT FRONT", "LEFT BACK", "MIDDLE BACK" }
+
+local function myEntry()
+	for t = 1, 2 do
+		for _, e in state.roster[t] or {} do
+			if e.id == player.UserId then
+				return e, t
+			end
+		end
 	end
-	local team = myTeam()
-	homeName.TextColor3 = (team == 2) and DIM or TEXT
-	awayName.TextColor3 = (team == 1) and DIM or TEXT
+	return nil, 0
+end
+
+local lastScore = ""
+local function refreshBoard()
+	local score = state.score[1] .. " - " .. state.score[2]
+	scoreLabel.Text = score
+	if score ~= lastScore and lastScore ~= "" then
+		scorePop.Scale = 1.18
+		TweenService:Create(scorePop, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+	end
+	lastScore = score
+	homeServe.Visible = state.serving == 1
+	awayServe.Visible = state.serving == 2
+	setLabel.Text = "SET " .. (state.sets[1] + state.sets[2] + 1)
+	targetLabel.Text = (Config.SETS_TO_WIN > 1 and ("SETS " .. state.sets[1] .. "-" .. state.sets[2] .. " · ") or "") .. "TO " .. (state.points or Config.POINTS_TO_WIN)
+
 	local showDots = state.phase == "rally" and state.touchTeam ~= 0 and state.touches > 0
-	dotsFrame.Visible = showDots
+	strip.Visible = showDots
 	for i = 1, 3 do
 		local used = showDots and i <= state.touches
 		dots[i].BackgroundColor3 = used and (COLORS[state.touchTeam] or TEXT) or TEXT
-		dots[i].BackgroundTransparency = used and 0 or 0.75
+		dots[i].BackgroundTransparency = used and 0 or 0.8
+	end
+
+	-- player card
+	local me, team = myEntry()
+	if me then
+		local color = COLORS[team] or TEXT
+		cardStripe.BackgroundColor3 = color
+		setRingColor(color)
+		tagArrow.TextColor3 = color
+		if (state.teamSize or 6) == 6 and state.serveIndex then
+			local pos = (me.index - state.serveIndex[team]) % 6 + 1
+			cardPos.Text = NAMES[team] .. "  ·  POS " .. pos .. "  " .. POSITION_NAMES[pos]
+		else
+			cardPos.Text = NAMES[team]
+		end
+		cardStats.Text = "KILLS <font color=\"#ffd450\">" .. me.k .. "</font>   ACES <font color=\"#ffd450\">" .. me.a
+			.. "</font>   BLOCKS <font color=\"#ffd450\">" .. me.b .. "</font>   DIGS <font color=\"#ffd450\">" .. me.d .. "</font>"
+		local rating = math.clamp(6 + 0.3 * me.k + 0.4 * me.a + 0.4 * me.b + 0.15 * me.d, 3, 10)
+		ratingLabel.Text = string.format("%.1f", rating)
+		ratingLabel.TextColor3 = rating >= 8 and Color3.fromRGB(120, 255, 170) or rating >= 7 and GOLD or TEXT
 	end
 end
 
-local function hintText()
-	local team = myTeam()
-	if team == 0 then
-		return "Watching  ·  both teams are full"
+local function updatePrompts()
+	if myTeam() == 0 then
+		setPrompts({})
+		return
 	end
+	local pad = lastInput == "pad"
 	if myServe() then
 		local left = math.max(0, math.ceil(state.deadline - serverNow()))
-		local timer = "   <font color=\"#9aa0aa\">" .. left .. "</font>"
-		if lastInput == "touch" then
-			return "<b>HOLD HIT</b> to power up, let go in the green  ·  jump first for a jump serve" .. timer
-		elseif lastInput == "pad" then
-			return "<b>HOLD R2</b> to power up, let go in the green  ·  aim with the camera  ·  <b>A</b> first for a jump serve" .. timer
-		end
-		return "<b>HOLD CLICK</b> to power up, let go in the green  ·  aim with the mouse  ·  <b>SPACE</b> first for a jump serve" .. timer
+		setPrompts({
+			{ pad and "HOLD R2" or "HOLD CLICK", "Serve  (" .. left .. "s)" },
+			{ pad and "A" or "SPACE", "Jump first: jump serve" },
+			{ pad and "R-STICK" or "MOUSE", "Aim" },
+		})
+	elseif state.phase == "rally" then
+		setPrompts({
+			{ pad and "R2" or "CLICK", "Pass · Spike in the air" },
+			{ pad and "X" or "E", "Set · Tip in the air" },
+			{ pad and "A" or "SPACE", "Jump · Block at the net" },
+			{ pad and "B" or "Q", "Dive" },
+		})
+	else
+		setPrompts({})
 	end
-	if state.phase == "rally" then
-		if lastInput == "touch" then
-			return "<b>HIT</b> pass  ·  <b>SET</b> set  ·  jump + <b>HIT</b> spike  ·  jump + <b>SET</b> tip  ·  <b>DIVE</b>"
-		elseif lastInput == "pad" then
-			return "<b>R2</b> pass  ·  <b>X</b> set  ·  <b>A</b> then <b>R2</b> spike  ·  <b>A</b> then <b>X</b> tip  ·  <b>B</b> dive"
-		end
-		return "<b>CLICK</b> pass  ·  <b>E</b> set  ·  <b>SPACE</b> then <b>CLICK</b> spike or <b>E</b> tip  ·  <b>Q</b> dive  ·  aim with the mouse"
-	end
-	if state.phase == "serve" then
-		return NAMES[state.serving] .. " to serve"
-	end
-	return ""
 end
 
 -- Swings the camera round behind you, facing the net
@@ -293,10 +323,14 @@ local function dive()
 end
 
 UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then
+	if processed or inMenu then
 		return
 	end
 	local key = input.KeyCode
+	if key == Enum.KeyCode.M then
+		openMenu()
+		return
+	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
 		press()
 	elseif key == Enum.KeyCode.E or key == Enum.KeyCode.ButtonX then
@@ -312,6 +346,9 @@ UserInputService.InputEnded:Connect(function(input)
 	end
 end)
 
+menuButton.Activated:Connect(function()
+	openMenu()
+end)
 hitButton.MouseButton1Down:Connect(press)
 hitButton.MouseButton1Up:Connect(release)
 setButton.MouseButton1Down:Connect(setBall)
@@ -440,9 +477,7 @@ RunService.RenderStepped:Connect(function(dt)
 		aimMarker.Transparency = 1
 	end
 
-	local cueOn = live and t < cueUntil
-	cue.TextTransparency = cueOn and 0.05 or 1
-	cue.TextStrokeTransparency = cueOn and 0.6 or 1
+	cueBox.Visible = live and t < cueUntil
 
 	if charging then
 		powerBar.Visible = true
@@ -453,9 +488,27 @@ RunService.RenderStepped:Connect(function(dt)
 	else
 		powerBar.Visible = false
 	end
-	local text = hintText()
-	if hint.Text ~= text then
-		hint.Text = text
+	updatePrompts()
+
+	-- the ring on the floor and the name tag follow you
+	local hum, hrp = character()
+	local onCourt = not inMenu and team ~= 0 and hrp ~= nil
+	if onCourt then
+		local look = hrp.CFrame.LookVector
+		local yaw = math.atan2(-look.X, -look.Z)
+		local airLift = math.clamp(hrp.Position.Y - GY - 3, 0, 20)
+		ringModel:PivotTo(CFrame.new(hrp.Position.X, GY + 0.06, hrp.Position.Z) * CFrame.Angles(0, yaw, 0))
+		local fade = 0.15 + math.clamp(airLift / 10, 0, 0.5) -- fainter while you're high in the air
+		for _, seg in ringParts do
+			seg.Transparency = fade
+		end
+		tag.Adornee = hum and hum.Parent and hum.Parent:FindFirstChild("Head") or hrp
+		tag.Enabled = true
+	else
+		for _, seg in ringParts do
+			seg.Transparency = 1
+		end
+		tag.Enabled = false
 	end
 end)
 

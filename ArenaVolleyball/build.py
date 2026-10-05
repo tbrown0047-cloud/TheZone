@@ -17,7 +17,7 @@ def read(name):
 
 
 server = "".join(read(f"server_{i}.luau") for i in range(1, 5))
-client = read("client_1.luau") + read("client_2.luau")
+client = "".join(f.read_text(encoding="utf-8") for f in sorted(SRC.glob("client_*.luau")))
 config = read("Config.luau")
 
 

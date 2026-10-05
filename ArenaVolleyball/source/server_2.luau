@@ -256,6 +256,7 @@ local function addPlayer(plr)
 	clearBody(slot)
 	slot.isAI = false
 	slot.player = plr
+	slot.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
 	slotOfPlayer[plr] = slot
 	plr.CharacterAdded:Connect(function(char)
 		bindCharacter(slot, plr, char)

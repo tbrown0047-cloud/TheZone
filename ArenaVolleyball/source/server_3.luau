@@ -225,7 +225,7 @@ local function awardPoint(winner, reason)
 		w.serveIndex = w.serveIndex % TEAM_SIZE + 1
 	end
 	local names = Config.TEAM_NAMES
-	if w.score >= Config.POINTS_TO_WIN and w.score - l.score >= Config.WIN_BY then
+	if w.score >= pointsToWin and w.score - l.score >= Config.WIN_BY then
 		w.sets += 1
 		if w.sets >= Config.SETS_TO_WIN then
 			phase, phaseUntil = "matchover", now() + 9
@@ -310,6 +310,9 @@ local function touch(slot, kind, p, t, aim, q)
 		return false
 	end
 	local v, shot = shotFor(slot, kind, p, aim, q, n)
+	if n == 1 and ball.lastKind == "spike" and slot.stats then
+		slot.stats.digs += 1
+	end
 	ball.touches, ball.lastTeam, ball.lastSlot, ball.lastKind = n, team, slot, shot
 	slot.lastTouch = now()
 	launch(p, v, t)
@@ -338,6 +341,9 @@ local function findBlocker(team, p)
 end
 
 local function doBlock(blocker, p, v, t)
+	if blocker.stats then
+		blocker.stats.blocks += 1
+	end
 	local back = -side(blocker.team) -- towards the attackers
 	local np, nv
 	if rng:NextNumber() < 0.6 then
@@ -407,8 +413,14 @@ local function onLand(t)
 			if ball.lastTeam == winner then
 				if ball.lastKind == "serve" then
 					reason = "ACE"
+					if ball.lastSlot and ball.lastSlot.stats then
+						ball.lastSlot.stats.aces += 1
+					end
 				elseif ball.lastKind == "spike" then
 					reason = "KILL"
+					if ball.lastSlot and ball.lastSlot.stats then
+						ball.lastSlot.stats.kills += 1
+					end
 				elseif ball.lastKind == "block" then
 					reason = "BLOCK"
 				elseif ball.lastKind == "tip" then

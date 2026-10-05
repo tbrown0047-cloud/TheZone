@@ -12,7 +12,8 @@ function sendState(plr)
 	for t = 1, 2 do
 		for _, s in teams[t].slots do
 			if s.player then
-				table.insert(roster[t], s.player.UserId)
+				local st = s.stats or {}
+				table.insert(roster[t], { id = s.player.UserId, index = s.index, k = st.kills or 0, a = st.aces or 0, b = st.blocks or 0, d = st.digs or 0 })
 			end
 		end
 	end
@@ -26,6 +27,10 @@ function sendState(plr)
 		touchTeam = ball.lastTeam,
 		roster = roster,
 		deadline = serveDeadline,
+		serveIndex = { teams[1].serveIndex, teams[2].serveIndex },
+		level = LEVEL,
+		points = pointsToWin,
+		teamSize = TEAM_SIZE,
 	}
 	if plr then
 		remote:FireClient(plr, "state", data)
@@ -61,6 +66,9 @@ local function startMatch()
 	servingTeam = (matchNo % 2 == 1) and 1 or 2 -- take turns serving first
 	for t = 1, 2 do
 		teams[t].score, teams[t].sets = 0, 0
+		for _, s in teams[t].slots do
+			s.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
+		end
 		teams[t].serveIndex = (t == servingTeam) and 1 or 0
 		for _, s in teams[t].slots do
 			placeSlot(s, homeSpot(s))
@@ -68,7 +76,7 @@ local function startMatch()
 	end
 	setupServe()
 	local format = Config.SETS_TO_WIN > 1 and ("BEST OF " .. (Config.SETS_TO_WIN * 2 - 1) .. " SETS") or "ONE SET"
-	banner("FIRST TO " .. Config.POINTS_TO_WIN, format, 0)
+	banner("FIRST TO " .. pointsToWin, format, 0)
 end
 
 local function aiServe(slot, jumped)
@@ -427,13 +435,51 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 	end
 end)
 
+-- From the main menu: play (with match settings) or go back to the menu
+local function anyPeople()
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.player then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+remote.OnServerEvent:Connect(function(plr, action, data)
+	if action == "join" and not slotOfPlayer[plr] then
+		local first = not anyPeople()
+		addPlayer(plr)
+		if first and slotOfPlayer[plr] and type(data) == "table" then
+			-- the first person in picks the difficulty and the target score
+			local lvl = tonumber(data.level)
+			if lvl and AI_LEVELS[math.floor(lvl)] then
+				LEVEL = math.floor(lvl)
+				AI = AI_LEVELS[LEVEL]
+			end
+			local pts = tonumber(data.points)
+			if pts == 15 or pts == 21 or pts == 25 then
+				pointsToWin = pts
+			end
+			startMatch()
+		end
+		sendState()
+	elseif action == "leave" and slotOfPlayer[plr] then
+		removePlayer(plr)
+		local char = plr.Character
+		if char and char.PrimaryPart then
+			-- off the court, by the sideline
+			local spot = Vector3.new(C.X + HALF_W + 24, GY + 4, C.Z)
+			char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, C.Z)))
+		end
+	end
+end)
+
 ---------------------------------------------------------------- start
 
-Players.PlayerAdded:Connect(addPlayer)
+-- people join from the main menu; until then they watch
 Players.PlayerRemoving:Connect(removePlayer)
-for _, plr in Players:GetPlayers() do
-	task.spawn(addPlayer, plr)
-end
 
 -- controls and HUD for everyone
 local function giveClient(plr)
