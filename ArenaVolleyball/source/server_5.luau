@@ -212,12 +212,13 @@ local function startCareerMatch(plr)
 		mode = "career",
 		home = career.club,
 		away = opponentFor(career.club, career.round),
-		lineup = lineup,
+		plan = { lineup = lineup, tactics = career.tactics },
 		players = {
 			{
 				player = plr,
 				team = 1,
 				slot = slot,
+				control = "lock", -- in your career you are one player
 				override = { first = "", last = string.upper(plr.DisplayName), number = career.number, role = career.role, attrs = attrs, ovr = career.ovr, hand = "Right" },
 			},
 		},
@@ -321,9 +322,11 @@ local function tryOnlineMatch()
 		mode = "online",
 		home = a.club,
 		away = away,
+		plan = a.plan,
+		awayPlan = away == b.club and b.plan or nil,
 		players = {
-			{ player = a.player, team = 1, slot = 2 },
-			{ player = b.player, team = 2, slot = 2 },
+			{ player = a.player, team = 1, slot = 2, control = "switch" },
+			{ player = b.player, team = 2, slot = 2, control = "switch" },
 		},
 	})
 end
@@ -379,6 +382,13 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		createCareer(plr, data)
 	elseif action == "career_train" then
 		trainCareer(plr, data.attr)
+	elseif action == "career_tactics" then
+		-- the team tactics you play with in your career
+		local career = profiles[plr] and profiles[plr].career
+		if career and type(data.tactics) == "table" then
+			career.tactics = Teams.cleanPlan(career.club, { tactics = data.tactics }).tactics
+			sendProfile(plr)
+		end
 	elseif action == "career_save" then
 		task.spawn(saveProfile, plr)
 	elseif action == "career_retire" then
@@ -388,13 +398,13 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 			task.spawn(saveProfile, plr)
 		end
 	elseif action == "start" and data.mode == "career" then
-		if not slotOfPlayer[plr] then
+		if not controllers[plr] then
 			startCareerMatch(plr)
 		end
 	elseif action == "start" and data.mode == "online" then
-		if not slotOfPlayer[plr] then
+		if not controllers[plr] then
 			leaveQueue(plr)
-			table.insert(queue, { player = plr, club = math.clamp(math.floor(tonumber(data.club) or 1), 1, #Teams.list) })
+			table.insert(queue, { player = plr, club = math.clamp(math.floor(tonumber(data.club) or 1), 1, #Teams.list), plan = type(data.plan) == "table" and data.plan or nil })
 			tryOnlineMatch()
 		end
 	elseif action == "online_cancel" then

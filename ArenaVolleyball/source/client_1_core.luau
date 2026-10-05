@@ -36,37 +36,40 @@ local function serverNow()
 end
 
 -- your choices from the settings screen
-local settings = { camera = "broadcast", aimMarker = true, radar = true, hints = true }
+-- camera: "broadcast" (TV-style) or "player" (Roblox's camera behind you, with shift lock)
+-- control: "switch" to control any teammate, "lock" to stay one player all match
+local settings = { camera = "broadcast", aimMarker = true, radar = true, hints = true, control = "switch", autoSwitch = true, assist = true }
 
 ---------------------------------------------------------------- look: colours and fonts
 
+-- a calm navy base with one bright accent (teal) and coral for the opponent
 local COL = {
-	bg1 = Color3.fromRGB(44, 30, 122),
-	bg2 = Color3.fromRGB(18, 16, 64),
-	panel = Color3.fromRGB(26, 22, 90),
-	panelHi = Color3.fromRGB(48, 40, 140),
-	line = Color3.fromRGB(124, 134, 255),
-	teal = Color3.fromRGB(94, 242, 224),
-	cyan = Color3.fromRGB(176, 238, 255),
-	pink = Color3.fromRGB(255, 84, 204),
-	coral = Color3.fromRGB(255, 100, 96),
-	violet = Color3.fromRGB(150, 98, 255),
-	lime = Color3.fromRGB(214, 255, 60),
-	text = Color3.fromRGB(242, 244, 255),
-	dim = Color3.fromRGB(162, 168, 214),
-	ink = Color3.fromRGB(18, 16, 48),
-	win = Color3.fromRGB(64, 204, 96),
-	loss = Color3.fromRGB(232, 64, 72),
-	gold = Color3.fromRGB(255, 212, 80),
+	bg1 = Color3.fromRGB(16, 24, 46),
+	bg2 = Color3.fromRGB(8, 12, 26),
+	panel = Color3.fromRGB(21, 31, 58),
+	panelHi = Color3.fromRGB(34, 49, 88),
+	line = Color3.fromRGB(78, 98, 150),
+	teal = Color3.fromRGB(46, 222, 192),
+	cyan = Color3.fromRGB(226, 236, 255),
+	pink = Color3.fromRGB(255, 84, 140),
+	coral = Color3.fromRGB(255, 108, 96),
+	violet = Color3.fromRGB(84, 124, 255),
+	lime = Color3.fromRGB(176, 232, 104),
+	text = Color3.fromRGB(240, 244, 252),
+	dim = Color3.fromRGB(146, 160, 196),
+	ink = Color3.fromRGB(10, 14, 28),
+	win = Color3.fromRGB(64, 204, 120),
+	loss = Color3.fromRGB(232, 72, 80),
+	gold = Color3.fromRGB(255, 198, 66),
 }
 
 local function family(name, weight)
 	return Font.new("rbxasset://fonts/families/" .. name .. ".json", weight)
 end
 local FONT = {
-	title = family("RobotoCondensed", Enum.FontWeight.Bold),
-	head = family("RobotoCondensed", Enum.FontWeight.Medium),
-	body = family("RobotoCondensed", Enum.FontWeight.Regular),
+	title = family("BuilderSans", Enum.FontWeight.Bold),
+	head = family("BuilderSans", Enum.FontWeight.Medium),
+	body = family("BuilderSans", Enum.FontWeight.Regular),
 	num = family("Oswald", Enum.FontWeight.Medium),
 }
 
@@ -142,6 +145,113 @@ local function gradient(o, c1, c2, rotation, t1, t2)
 		Transparency = NumberSequence.new(t1 or 0, t2 or 0),
 	}, o)
 end
+
+-- the main call-to-action button: solid accent, dark label
+local function primaryButton(props, parent, label, textSize)
+	local b = button(props, parent)
+	b.BackgroundTransparency = 0
+	b.BackgroundColor3 = COL.teal
+	round(b, 8)
+	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 20, TextColor3 = COL.ink, ZIndex = b.ZIndex + 1 }, b)
+	b.MouseEnter:Connect(function()
+		b.BackgroundColor3 = COL.teal:Lerp(Color3.new(1, 1, 1), 0.25)
+	end)
+	b.MouseLeave:Connect(function()
+		b.BackgroundColor3 = COL.teal
+	end)
+	return b, l
+end
+
+-- a quieter button
+local function secondaryButton(props, parent, label, textSize)
+	local b = button(props, parent)
+	b.BackgroundTransparency = 0
+	b.BackgroundColor3 = COL.panelHi
+	round(b, 8)
+	outline(b, COL.line, 1, 0.5)
+	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 18, ZIndex = b.ZIndex + 1 }, b)
+	b.MouseEnter:Connect(function()
+		b.BackgroundColor3 = COL.panelHi:Lerp(Color3.new(1, 1, 1), 0.12)
+	end)
+	b.MouseLeave:Connect(function()
+		b.BackgroundColor3 = COL.panelHi
+	end)
+	return b, l
+end
+
+---------------------------------------------------------------- drag and drop (squad screen and substitutions)
+-- Drag.source(button, payload, ghost, onClick) makes a button draggable; Drag.target(gui,
+-- payload) marks where it can be dropped; Drag.onDrop(from, to) is called when it is.
+
+local Drag = { targets = setmetatable({}, { __mode = "k" }), active = nil }
+Drag.gui = make("ScreenGui", { Name = "VolleyballDrag", ResetOnSpawn = false, DisplayOrder = 60, IgnoreGuiInset = false }, player:WaitForChild("PlayerGui"))
+
+function Drag.target(gui, payload)
+	Drag.targets[gui] = payload
+end
+
+local function dropTargetAt(pos)
+	local ok, list = pcall(function()
+		return player.PlayerGui:GetGuiObjectsAtPosition(pos.X, pos.Y)
+	end)
+	if not ok then
+		return nil
+	end
+	for _, obj in list do
+		local node = obj
+		while node and node ~= player.PlayerGui do
+			local payload = Drag.targets[node]
+			if payload ~= nil and node.Visible then
+				return payload
+			end
+			node = node.Parent
+		end
+	end
+	return nil
+end
+
+function Drag.source(gui, payload, makeGhost, onClick, onDrop)
+	gui.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		Drag.active = { gui = gui, payload = payload, start = Vector2.new(input.Position.X, input.Position.Y), makeGhost = makeGhost, onClick = onClick, onDrop = onDrop, input = input }
+	end)
+end
+
+UserInputService.InputChanged:Connect(function(input)
+	local d = Drag.active
+	if not d or (input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch) then
+		return
+	end
+	local pos = Vector2.new(input.Position.X, input.Position.Y)
+	if not d.ghost and (pos - d.start).Magnitude > 8 then
+		d.ghost = d.makeGhost and d.makeGhost() or frame({ Size = UDim2.fromOffset(60, 60), BackgroundColor3 = COL.teal }, nil)
+		d.ghost.AnchorPoint = Vector2.new(0.5, 0.5)
+		d.ghost.ZIndex = 50
+		d.ghost.Parent = Drag.gui
+	end
+	if d.ghost then
+		d.ghost.Position = UDim2.fromOffset(pos.X, pos.Y)
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	local d = Drag.active
+	if not d or (input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch) then
+		return
+	end
+	Drag.active = nil
+	if d.ghost then
+		d.ghost:Destroy()
+		local target = dropTargetAt(Vector2.new(input.Position.X, input.Position.Y))
+		if target ~= nil and d.onDrop then
+			d.onDrop(d.payload, target)
+		end
+	elseif d.onClick then
+		d.onClick(d.payload)
+	end
+end)
 
 -- dark text on light colours, white on dark ones
 local function contrast(color)
@@ -356,9 +466,18 @@ local function myEntry()
 	return nil, 0
 end
 
+-- your team: from the list of people playing (you always control someone on it)
 local function myTeam()
+	local ctrl = state.controls and state.controls[tostring(player.UserId)]
+	if ctrl then
+		return ctrl.team
+	end
 	local _, t = myEntry()
 	return t
+end
+
+local function myControl()
+	return state.controls and state.controls[tostring(player.UserId)]
 end
 
 local function entryAt(team, index)
@@ -378,10 +497,20 @@ local function myServe()
 	return state.phase == "serve" and state.server == player.UserId
 end
 
+-- the body you're controlling right now (never your own character during a match)
+local function controlledModel()
+	local e = myEntry()
+	local model = e and e.model
+	if model and model.Parent then
+		return model
+	end
+	return nil
+end
+
 local function character()
-	local char = player.Character
-	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	local model = controlledModel()
+	local hum = model and model:FindFirstChildOfClass("Humanoid")
+	local hrp = model and model:FindFirstChild("HumanoidRootPart")
 	return hum, hrp
 end
 

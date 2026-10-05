@@ -5,7 +5,7 @@ local Teams = {}
 
 Teams.LEAGUE = "ARENA LEAGUE"
 Teams.STARTERS = 6
-Teams.SQUAD_SIZE = 8 -- six starters and two on the bench
+Teams.SQUAD_SIZE = 12 -- six starters, the libero and five on the bench
 
 Teams.ROLES = {
 	S = "SETTER",
@@ -46,8 +46,8 @@ local LAST = {
 	"Ricci", "Nowak", "Takahashi", "Leclerc", "Sorensen", "Marin", "Kruger", "Abe", "Castillo", "Volkov",
 }
 
--- The starting six in rotation order (position 1 first: a 5-1 system), then the bench
-local SQUAD_ROLES = { "S", "OH", "MB", "OPP", "OH", "MB", "OH", "L" }
+-- The starting six in rotation order (position 1 first: a 5-1 system), the libero, then the bench
+local SQUAD_ROLES = { "S", "OH", "MB", "OPP", "OH", "MB", "L", "S", "OH", "MB", "OPP", "L" }
 
 -- How each role differs from the club's rating
 local TEMPLATE = {
@@ -88,7 +88,7 @@ function Teams.overall(role, attrs)
 end
 
 local cache = {}
--- Eight players: { first, last, number, role, attrs, ovr, hand }
+-- Twelve players: { first, last, number, role, attrs, ovr, hand }
 function Teams.squad(id)
 	if cache[id] then
 		return cache[id]
@@ -181,6 +181,113 @@ end
 -- How good a team's AI is, 0 (weakest) to 1 (best), from its overall
 function Teams.skill(ovr)
 	return math.clamp((ovr - 58) / 30, 0, 1)
+end
+
+---------------------------------------------------------------- game plans: tactics and roles
+
+-- Team tactics: the AI (and your AI teammates) play to these
+Teams.TACTICS = {
+	{ key = "tempo", name = "ATTACK TEMPO", options = { "HIGH", "BALANCED", "FAST" },
+		info = { HIGH = "High, safe sets. Accurate, but blockers have time to get there.", BALANCED = "A mix of high and quick sets.", FAST = "Quick, flat sets that beat the block. Harder to set well." } },
+	{ key = "focus", name = "SET DISTRIBUTION", options = { "OUTSIDE", "BALANCED", "MIDDLE", "OPPOSITE" },
+		info = { OUTSIDE = "Most sets go to the outside hitters.", BALANCED = "The setter spreads the ball around.", MIDDLE = "Lots of quick balls to the middle blockers.", OPPOSITE = "Feed the opposite on the right side." } },
+	{ key = "serve", name = "SERVE STRATEGY", options = { "SAFE", "BALANCED", "AGGRESSIVE" },
+		info = { SAFE = "Get it in. Few aces, very few errors.", BALANCED = "Steady serves with some risk.", AGGRESSIVE = "Jump serves at the lines. More aces, more errors." } },
+	{ key = "block", name = "BLOCKING", options = { "READ", "BALANCED", "COMMIT" },
+		info = { READ = "Jump less often, but block better when they do.", BALANCED = "Block most attacks.", COMMIT = "Block everything. Strong hitters can tool the block." } },
+	{ key = "defense", name = "DEFENSIVE LINE", options = { "DEEP", "BALANCED", "UP" },
+		info = { DEEP = "Back row stays deep for hard spikes. Tips can drop.", BALANCED = "Standard positions.", UP = "Back row plays close to cover tips. Hard spikes get past." } },
+}
+
+-- Team roles, like captain and set pieces in football games
+Teams.ROLE_SLOTS = {
+	{ key = "captain", name = "CAPTAIN", info = "Lifts the whole team a little." },
+	{ key = "libero", name = "LIBERO", info = "Comes on for the middle blocker in the back row." },
+	{ key = "goto", name = "GO-TO HITTER", info = "Gets the most sets, and even more late in the set." },
+	{ key = "quick", name = "QUICK ATTACKER", info = "The middle blocker the setter goes to for quick balls." },
+}
+
+-- Every club has its own style, so opponents play differently
+function Teams.defaultTactics(id)
+	local roll = roller(id * 104729 + 7)
+	local out = {}
+	for _, t in Teams.TACTICS do
+		-- mostly balanced, with a club flavour or two
+		out[t.key] = roll(1, 100) <= 55 and "BALANCED" or t.options[roll(1, #t.options)]
+	end
+	return out
+end
+
+local function hasRole(squad, index, roles)
+	local p = squad[index]
+	return p ~= nil and table.find(roles, p.role) ~= nil
+end
+
+-- Which squad players can take a team role
+function Teams.eligible(id, plan, key)
+	local squad = Teams.squad(id)
+	local out = {}
+	if key == "libero" then
+		for i, p in squad do
+			if p.role == "L" and not table.find(plan.lineup, i) then
+				table.insert(out, i)
+			end
+		end
+	elseif key == "captain" then
+		for _, i in plan.lineup do
+			table.insert(out, i)
+		end
+	elseif key == "goto" then
+		for _, i in plan.lineup do
+			if hasRole(squad, i, { "OH", "OPP", "MB" }) then
+				table.insert(out, i)
+			end
+		end
+	elseif key == "quick" then
+		for _, i in plan.lineup do
+			if hasRole(squad, i, { "MB" }) then
+				table.insert(out, i)
+			end
+		end
+		if #out == 0 then
+			for _, i in plan.lineup do
+				if hasRole(squad, i, { "OH", "OPP" }) then
+					table.insert(out, i)
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- A full, valid game plan from whatever was sent (missing or bad parts get sensible defaults)
+function Teams.cleanPlan(id, plan)
+	plan = type(plan) == "table" and plan or {}
+	local out = { lineup = Teams.validLineup(plan.lineup) and table.clone(plan.lineup) or Teams.defaultLineup(), tactics = {} }
+	local default = Teams.defaultTactics(id)
+	local tactics = type(plan.tactics) == "table" and plan.tactics or {}
+	for _, t in Teams.TACTICS do
+		out.tactics[t.key] = table.find(t.options, tactics[t.key]) and tactics[t.key] or default[t.key]
+	end
+	for _, r in Teams.ROLE_SLOTS do
+		local options = Teams.eligible(id, out, r.key)
+		local want = plan[r.key]
+		if table.find(options, want) then
+			out[r.key] = want
+		else
+			-- defaults: the setter captains, the best hitter is the go-to, the first middle the quick
+			local best, bestOvr = options[1], -1
+			for _, i in options do
+				local p = Teams.squad(id)[i]
+				local score = p.ovr + ((r.key == "captain" and p.role == "S") and 20 or 0)
+				if score > bestOvr then
+					best, bestOvr = i, score
+				end
+			end
+			out[r.key] = best
+		end
+	end
+	return out
 end
 
 -- League position by rating (1 = best)

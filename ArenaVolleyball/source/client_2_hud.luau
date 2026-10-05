@@ -5,18 +5,39 @@ local HUD = { stamina = 1, power = nil }
 HUD.gui = make("ScreenGui", {
 	Name = "VolleyballHUD",
 	ResetOnSpawn = false,
-	IgnoreGuiInset = true,
+	IgnoreGuiInset = false,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 	Enabled = false,
 }, player:WaitForChild("PlayerGui"))
-local hud = HUD.gui
+-- keep clear of Roblox's own buttons along the top
+pcall(function()
+	HUD.gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets
+end)
+-- everything is laid out for a 1280 x 720 screen and scaled to fit the real one
+HUD.root = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, HUD.gui)
+do
+	local scale = make("UIScale", { Scale = 1 }, HUD.root)
+	local function fit()
+		local size = HUD.gui.AbsoluteSize
+		if size.X < 10 then
+			return
+		end
+		local s = math.clamp(math.min(size.X / 1280, size.Y / 720), 0.5, 1.3)
+		scale.Scale = s
+		HUD.root.Size = UDim2.fromScale(1 / s, 1 / s)
+	end
+	HUD.gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
+	task.defer(fit)
+end
+local hud = HUD.root
+HUD.touchMode = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 local LEFT, RIGHT = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right
 
 -- scorebug, top left:  SET 1 | ACV | 12 - 9 | NPT
 do
 	local bug = frame({ Position = UDim2.fromOffset(28, 22), Size = UDim2.fromOffset(294, 52), BackgroundTransparency = 1 }, hud)
 	local setBox = frame({ Size = UDim2.fromOffset(70, 30), BackgroundColor3 = Color3.new(1, 1, 1) }, bug)
-	gradient(setBox, COL.teal, COL.violet, 0)
+	setBox.BackgroundColor3 = COL.teal
 	HUD.setLabel = text({ Size = UDim2.fromScale(1, 1), Text = "SET 1", FontFace = FONT.num, TextSize = 17, TextColor3 = COL.ink }, setBox)
 	local function teamBox(x)
 		local box = frame({ Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(74, 30), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.05 }, bug)
@@ -34,7 +55,7 @@ do
 	HUD.awayName, HUD.awayStripe, HUD.awayServe = teamBox(220)
 	HUD.awayServe.Position = UDim2.new(1, -9, 0.5, 0)
 	local strip = frame({ Position = UDim2.fromOffset(0, 32), Size = UDim2.fromOffset(294, 18), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.25 }, bug)
-	HUD.target = text({ Position = UDim2.fromOffset(8, 0), Size = UDim2.fromOffset(180, 18), FontFace = FONT.head, TextSize = 11, TextColor3 = COL.dim, TextXAlignment = LEFT }, strip)
+	HUD.target = text({ Position = UDim2.fromOffset(8, 0), Size = UDim2.fromOffset(220, 18), FontFace = FONT.head, TextSize = 11, TextColor3 = COL.dim, TextXAlignment = LEFT }, strip)
 	HUD.dots = {}
 	for i = 1, 3 do
 		HUD.dots[i] = frame({ Position = UDim2.new(1, -62 + (i - 1) * 18, 0.5, -4), Size = UDim2.fromOffset(12, 8), BackgroundColor3 = COL.text, BackgroundTransparency = 0.8 }, strip)
@@ -44,7 +65,15 @@ end
 -- court radar, bottom centre: your half at the bottom
 do
 	local W, H = 84, 156
-	local radar = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.fromOffset(W + 18, H + 18), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.3 }, hud)
+	-- on phones the bottom corners belong to your thumbs, so the radar goes top right
+	local radar = frame({
+		AnchorPoint = HUD.touchMode and Vector2.new(1, 0) or Vector2.new(0.5, 1),
+		Position = HUD.touchMode and UDim2.new(1, -20, 0, 16) or UDim2.new(0.5, 0, 1, -16),
+		Size = UDim2.fromOffset(W + 18, H + 18),
+		BackgroundColor3 = COL.bg2,
+		BackgroundTransparency = 0.3,
+	}, hud)
+	round(radar, 6)
 	outline(radar, COL.line, 1, 0.5)
 	local court = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H), BackgroundColor3 = Color3.fromRGB(214, 128, 62), BackgroundTransparency = 0.5 }, radar)
 	outline(court, Color3.new(1, 1, 1), 1, 0.3)
@@ -196,8 +225,9 @@ function HUD.setPrompts(list)
 end
 
 -- "your ball" cue
-HUD.cue = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -200), Size = UDim2.fromOffset(340, 30), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
-gradient(HUD.cue, COL.violet, COL.bg1, 0)
+HUD.cue = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -210), Size = UDim2.fromOffset(380, 30), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15, Visible = false }, hud)
+round(HUD.cue, 15)
+outline(HUD.cue, COL.teal, 1, 0.3)
 HUD.cueText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 15, RichText = true }, HUD.cue)
 HUD.cueUntil = 0
 
@@ -229,39 +259,79 @@ function HUD.quality(q)
 	end
 end
 
--- touch-screen buttons
-HUD.touchMode = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-local function touchButton(label, pos, size)
+-- touch-screen buttons, in an arc around Roblox's jump button (bottom right)
+HUD.touchGui = make("ScreenGui", { Name = "VolleyballTouch", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 2, Enabled = false }, player:WaitForChild("PlayerGui"))
+local function touchButton(label, primary)
 	local b = make("TextButton", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = pos,
-		Size = UDim2.fromOffset(size, size),
-		BackgroundColor3 = COL.bg1,
-		BackgroundTransparency = 0.25,
+		BackgroundColor3 = primary and COL.teal or COL.bg1,
+		BackgroundTransparency = primary and 0.1 or 0.25,
 		Text = label,
 		FontFace = FONT.title,
 		TextSize = 14,
-		TextColor3 = COL.text,
+		TextColor3 = primary and COL.ink or COL.text,
 		AutoButtonColor = false,
 		Visible = HUD.touchMode,
-	}, hud)
-	round(b, size)
+	}, HUD.touchGui)
+	make("UICorner", { CornerRadius = UDim.new(1, 0) }, b)
 	outline(b, COL.teal, 2, 0.3)
 	return b
 end
-HUD.hitButton = touchButton("HIT", UDim2.new(1, -150, 1, -210), 76)
-HUD.setButton = touchButton("SET", UDim2.new(1, -238, 1, -138), 58)
-HUD.diveButton = touchButton("DIVE", UDim2.new(1, -76, 1, -286), 58)
-HUD.abilityButton = touchButton("POWER", UDim2.new(1, -66, 1, -176), 52)
+HUD.hitButton = touchButton("HIT", true)
+HUD.setButton = touchButton("SET")
+HUD.diveButton = touchButton("DIVE")
+HUD.abilityButton = touchButton("POWER")
+HUD.switchButton = touchButton("SWITCH")
+-- same sizes and places Roblox uses for its jump button
+local function layoutTouch()
+	local vp = workspace.CurrentCamera.ViewportSize
+	local small = math.min(vp.X, vp.Y) <= 500
+	local jump = small and 70 or 120
+	local center = small and Vector2.new(vp.X - 95 + 35, vp.Y - 90 + 35) or Vector2.new(vp.X - 170 + 60, vp.Y - 210 + 60)
+	local k = jump / 120
+	local function place(b, size, angle, radius)
+		local a = math.rad(angle)
+		local pos = center + Vector2.new(math.cos(a), math.sin(a)) * radius
+		b.Size = UDim2.fromOffset(size, size)
+		b.Position = UDim2.fromOffset(pos.X, pos.Y)
+		b.TextSize = math.max(11, math.floor(14 * math.max(k, 0.8)))
+	end
+	local hit, small2, outer = math.max(64, 84 * k), math.max(50, 62 * k), math.max(44, 56 * k)
+	local inner = jump / 2 + 12
+	place(HUD.hitButton, hit, 180, inner + hit / 2)
+	place(HUD.setButton, small2, 228, inner + small2 / 2)
+	place(HUD.diveButton, small2, 274, inner + small2 / 2)
+	local ring = inner + hit + 14 + outer / 2
+	place(HUD.abilityButton, outer, 200, ring)
+	place(HUD.switchButton, outer, 246, ring)
+end
+layoutTouch()
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(layoutTouch)
 if HUD.touchMode then
 	HUD.prompts.Visible = false
 	HUD.me.holder.Visible = false
 	HUD.them.holder.Visible = false
 end
 
--- ability meter, above your player panel
+-- ability meter and stamina bar: above your player panel (top centre on phones)
 do
-	local pill = frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 70, 1, -72), Size = UDim2.fromOffset(244, 22), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15 }, hud)
+	local box = frame({
+		AnchorPoint = HUD.touchMode and Vector2.new(0.5, 0) or Vector2.new(0, 1),
+		Position = HUD.touchMode and UDim2.new(0.5, 0, 0, 12) or UDim2.new(0, 70, 1, -72),
+		Size = UDim2.fromOffset(244, 54),
+		BackgroundTransparency = 1,
+	}, hud)
+	-- stamina: jumping and diving use it, it comes back while you're on the ground
+	local stam = frame({ Position = UDim2.fromOffset(0, HUD.touchMode and 30 or 0), Size = UDim2.fromOffset(244, 22), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15 }, box)
+	round(stam, 4)
+	HUD.staminaStroke = outline(stam, COL.coral, 2, 1)
+	HUD.staminaFill = frame({ Size = UDim2.fromScale(1, 1), BackgroundColor3 = COL.win }, stam)
+	round(HUD.staminaFill, 4)
+	HUD.staminaText = text({ Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 1, 0), Text = "STAMINA", FontFace = FONT.title, TextSize = 13, TextXAlignment = LEFT, TextStrokeTransparency = 0.6 }, stam)
+	HUD.staminaValue = text({ Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 1, 0), Text = "100", FontFace = FONT.num, TextSize = 14, TextXAlignment = RIGHT, TextStrokeTransparency = 0.6 }, stam)
+	HUD.staminaBox = stam
+
+	local pill = frame({ Position = UDim2.fromOffset(0, HUD.touchMode and 0 or 28), Size = UDim2.fromOffset(244, 22), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15 }, box)
 	round(pill, 4)
 	HUD.abilityStroke = outline(pill, COL.gold, 2, 1)
 	HUD.abilityFill = frame({ Size = UDim2.fromScale(0, 1), BackgroundColor3 = COL.violet }, pill)
@@ -271,17 +341,14 @@ do
 	round(chip, 8)
 	HUD.abilityKey = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 11, TextColor3 = COL.ink, Text = "R" }, chip)
 	HUD.abilityChip = chip
-	HUD.abilityPill = pill
+	HUD.abilityPill = box
 end
 
--- crosshair for the shoulder camera
-HUD.crosshair = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(8, 8), BackgroundColor3 = COL.text, BackgroundTransparency = 0.15, Visible = false }, hud)
-round(HUD.crosshair, 4)
-outline(HUD.crosshair, COL.ink, 1, 0.3)
 
 -- "POWER SPIKE · #7 SILVA" when anyone uses an ability
 do
-	local notice = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 84), Size = UDim2.fromOffset(380, 34), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
+	local notice = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, HUD.touchMode and 76 or 24), Size = UDim2.fromOffset(400, 34), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
+	round(notice, 6)
 	HUD.noticeGradient = gradient(notice, COL.violet, COL.bg1, 0)
 	HUD.noticeText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 18 }, notice)
 	HUD.notice = notice
@@ -321,6 +388,12 @@ function HUD.refresh()
 	if (state.setsToWin or 1) > 1 then
 		target ..= "   ·   SETS " .. state.sets[1] .. "-" .. state.sets[2]
 	end
+	local mine = myTeam()
+	if mine ~= 0 and state.serveIndex then
+		-- which rotation your team is in (1 = the lineup as it started)
+		local rotation = ((state.serveIndex[mine] or 1) - 1) % 6 + 1
+		target ..= "   ·   ROTATION " .. rotation
+	end
 	HUD.target.Text = target
 	local showDots = state.phase == "rally" and state.touchTeam ~= 0 and state.touches > 0
 	for i = 1, 3 do
@@ -329,7 +402,8 @@ function HUD.refresh()
 		HUD.dots[i].BackgroundTransparency = used and 0 or 0.8
 	end
 
-	local me, team = myEntry()
+	local me = myEntry()
+	local team = myTeam()
 	if not HUD.touchMode then
 		fillPanel(HUD.me, me, team)
 		-- the opponent on the ball: their server, or whoever touched it last
@@ -354,7 +428,8 @@ local function radarPoint(pos, s)
 end
 
 function HUD.update(t, ballPos)
-	local me, team = myEntry()
+	local me = myEntry()
+	local team = myTeam()
 	local s = team == 2 and -1 or 1
 	-- radar
 	HUD.radar.Visible = settings.radar
@@ -392,12 +467,13 @@ function HUD.update(t, ballPos)
 		HUD.radarBall.Position = radarPoint(ballPos, s)
 	end
 
-	-- your indicator and stamina
+	-- the indicator over the player you control, with his name like a football game
 	local _, hrp = character()
 	local show = not inMenu and me ~= nil and hrp ~= nil
 	HUD.tag.Enabled = show
 	if show then
 		HUD.tag.Adornee = hrp
+		HUD.tagName.Text = me.number .. "  " .. me.name
 	end
 	local stamina = math.clamp(HUD.stamina or 1, 0, 1)
 	local lowColor = stamina < 0.25 and COL.coral or Color3.fromRGB(70, 150, 255)
@@ -405,13 +481,18 @@ function HUD.update(t, ballPos)
 	HUD.tagStamina.BackgroundColor3 = lowColor
 	HUD.me.bar.Size = UDim2.fromScale(stamina, 1)
 	HUD.me.bar.BackgroundColor3 = lowColor
+	-- the big stamina bar: green, then yellow, then flashing red
+	HUD.staminaFill.Size = UDim2.fromScale(math.max(stamina, 0.02), 1)
+	HUD.staminaFill.BackgroundColor3 = stamina < 0.25 and COL.loss or stamina < 0.55 and COL.gold or COL.win
+	HUD.staminaValue.Text = tostring(math.floor(stamina * 100 + 0.5))
+	HUD.staminaStroke.Transparency = stamina < 0.25 and (0.3 + 0.3 * math.sin(t * 10)) or 1
+	HUD.staminaText.Text = stamina < 0.25 and "STAMINA  ·  TIRED" or "STAMINA"
 	HUD.powerBack.Visible = HUD.power ~= nil
 	if HUD.power then
 		HUD.powerFill.Size = UDim2.fromScale(HUD.power, 1)
 	end
 	HUD.cue.Visible = state.phase == "rally" and t < HUD.cueUntil
 	HUD.prompts.Visible = settings.hints and not HUD.touchMode
-	HUD.crosshair.Visible = settings.camera == "player" and me ~= nil and not state.paused
 	-- ability meter
 	HUD.abilityPill.Visible = me ~= nil
 	if me then

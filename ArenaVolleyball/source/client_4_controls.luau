@@ -12,7 +12,7 @@ end
 local function aimPoint()
 	local cam = workspace.CurrentCamera
 	local ray
-	if lastInput == "kbm" then
+	if lastInput == "kbm" and UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
 		local m = UserInputService:GetMouseLocation()
 		ray = cam:ViewportPointToRay(m.X, m.Y)
 	else
@@ -101,47 +101,136 @@ local function setBall()
 	end
 end
 
----------------------------------------------------------------- stamina: jumps and dives tire you; it comes back on the ground
+---------------------------------------------------------------- stamina
+-- Jumping and diving use it and it comes back on the ground. Tired legs don't jump as
+-- high, and with too little left you can't jump at all.
 
 local Stamina = { value = 100 }
+local JUMP_COST, REPEAT_COST, DIVE_COST = 14, 10, 20
 
-local function hookCharacter(char)
-	local hum = char:WaitForChild("Humanoid", 10)
-	if not hum then
-		return
+function Stamina.update(dt, hum)
+	if hum and not airborne(hum) then
+		local still = hum.MoveDirection.Magnitude < 0.1
+		Stamina.value = math.min(100, Stamina.value + (still and 14 or 8) * dt)
 	end
-	Stamina.hum = hum
-	Stamina.baseJump = hum.JumpPower
-	Stamina.baseHeight = hum.JumpHeight
-	Stamina.value = 100
-	hum.StateChanged:Connect(function(_, new)
-		if new == Enum.HumanoidStateType.Jumping and not inMenu then
-			Stamina.value = math.max(0, Stamina.value - 12)
-		end
-	end)
-end
-if player.Character then
-	task.spawn(hookCharacter, player.Character)
-end
-player.CharacterAdded:Connect(hookCharacter)
-
-function Stamina.update(dt)
-	local hum = Stamina.hum
-	if not hum or not hum.Parent then
-		return
-	end
-	if hum.FloorMaterial ~= Enum.Material.Air then
-		Stamina.value = math.min(100, Stamina.value + 9 * dt)
-	end
-	-- tired legs don't jump as high
-	local scale = (Stamina.value < 25 and not inMenu) and 0.75 or 1
-	if Stamina.baseJump then
-		hum.JumpPower = Stamina.baseJump * scale
-	end
-	if Stamina.baseHeight then
-		hum.JumpHeight = Stamina.baseHeight * scale
+	if hum then
+		local scale = (Stamina.value < 25 and not inMenu) and 0.78 or 1
+		hum.UseJumpPower = true
+		hum.JumpPower = 50 * scale
 	end
 	HUD.stamina = Stamina.value / 100
+end
+
+---------------------------------------------------------------- moving the player you control
+-- Your body is an AI player's, so it is moved here from the normal movement keys,
+-- stick or thumbstick, relative to the camera. With movement assist on, he runs to the
+-- ball by himself when it's his to play and you aren't steering.
+
+local Pilot = { lastAir = false, landedAt = 0, lastJump = 0, cue = nil, tiredNote = 0 }
+
+local function moveInput()
+	local ok, vector = pcall(function()
+		local module = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
+		return module:GetControls():GetMoveVector()
+	end)
+	if ok and typeof(vector) == "Vector3" then
+		return vector
+	end
+	-- fallback: read the keys and the stick ourselves
+	local x, z = 0, 0
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) then z -= 1 end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) then z += 1 end
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then x -= 1 end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then x += 1 end
+	for _, input in UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1) do
+		if input.KeyCode == Enum.KeyCode.Thumbstick1 and input.Position.Magnitude > 0.2 then
+			x, z = input.Position.X, -input.Position.Y
+		end
+	end
+	return Vector3.new(x, 0, z)
+end
+
+-- a jump: only from the ground, not straight after landing, and only with stamina left
+function Pilot.jump()
+	local hum = character()
+	if inMenu or state.paused or not hum or airborne(hum) then
+		return
+	end
+	if os.clock() - Pilot.landedAt < 0.4 then
+		return -- no bunny hopping
+	end
+	if Stamina.value < JUMP_COST then
+		if os.clock() - Pilot.tiredNote > 1.5 then
+			Pilot.tiredNote = os.clock()
+			HUD.flash("TOO TIRED TO JUMP", COL.coral)
+		end
+		return
+	end
+	hum.Jump = true
+end
+
+UserInputService.JumpRequest:Connect(Pilot.jump)
+
+function Pilot.update(dt)
+	local hum, hrp = character()
+	if inMenu or not hum or not hrp then
+		Pilot.lastAir = false
+		return hum
+	end
+	-- jump costs: taking off, more for jumping again soon after
+	local air = airborne(hum)
+	if air and not Pilot.lastAir then
+		local again = os.clock() - Pilot.lastJump < 1.6
+		if hrp.AssemblyLinearVelocity.Y > 5 then
+			Stamina.value = math.max(0, Stamina.value - JUMP_COST - (again and REPEAT_COST or 0))
+			Pilot.lastJump = os.clock()
+		end
+	elseif not air and Pilot.lastAir then
+		Pilot.landedAt = os.clock()
+	end
+	Pilot.lastAir = air
+	if state.paused then
+		hum:Move(Vector3.zero)
+		return hum
+	end
+
+	local raw = moveInput()
+	local move = Vector3.zero
+	if raw.Magnitude > 0.05 then
+		local cf = workspace.CurrentCamera.CFrame
+		local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+		local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+		if forward.Magnitude > 0.01 and right.Magnitude > 0.01 then
+			move = right.Unit * raw.X + forward.Unit * -raw.Z
+			if move.Magnitude > 1 then
+				move = move.Unit
+			end
+		end
+	elseif settings.assist and Pilot.cue and serverNow() < Pilot.cue.tc + 0.15 and os.clock() > Controls.diveUntil then
+		-- movement assist: run to where the ball will be
+		local target = Pilot.cue.cp
+		local team = myTeam()
+		if Pilot.cue.kind == "spike" then
+			target += Vector3.new(0, 0, (team == 1 and 1 or -1) * 1.2) -- a step back from the ball to hit it
+		end
+		local off = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
+		if off.Magnitude > 0.8 then
+			move = off.Unit * math.clamp(off.Magnitude / 2.5, 0.35, 1)
+		end
+	end
+	hum:Move(move, false)
+
+	-- shift lock: face where the camera looks
+	local locked = settings.camera == "player" and UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+	hum.AutoRotate = not locked
+	if locked then
+		local look = workspace.CurrentCamera.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 0.01 then
+			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + flat.Unit)
+		end
+	end
+	return hum
 end
 
 local function dive()
@@ -149,7 +238,7 @@ local function dive()
 	if inMenu or not hum or not hrp or state.phase ~= "rally" then
 		return
 	end
-	if os.clock() - Controls.lastDive < 1.4 or airborne(hum) or Stamina.value < 20 then
+	if os.clock() - Controls.lastDive < 1.4 or airborne(hum) or Stamina.value < DIVE_COST then
 		return
 	end
 	local dir = hum.MoveDirection
@@ -160,7 +249,7 @@ local function dive()
 	if dir.Magnitude < 0.01 then
 		return
 	end
-	Stamina.value -= 20
+	Stamina.value -= DIVE_COST
 	Controls.lastDive = os.clock()
 	Controls.diveUntil = os.clock() + 0.7
 	Anim.play(hum.Parent, "dive")
@@ -179,6 +268,18 @@ local function dive()
 	end)
 end
 
+local function switchPlayer()
+	local ctrl = myControl()
+	if inMenu or state.paused or not ctrl then
+		return
+	end
+	if ctrl.mode ~= "switch" then
+		HUD.flash("LOCKED TO ONE PLAYER", COL.dim)
+		return
+	end
+	remote:FireServer("switch", {})
+end
+
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed or inMenu then
 		return
@@ -194,6 +295,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		remote:FireServer("ability", {})
 	elseif key == Enum.KeyCode.F or key == Enum.KeyCode.DPadUp then
 		remote:FireServer("call", {})
+	elseif key == Enum.KeyCode.Tab or key == Enum.KeyCode.ButtonL1 then
+		switchPlayer()
 	elseif key == Enum.KeyCode.V then
 		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
@@ -215,54 +318,53 @@ HUD.hitButton.MouseButton1Down:Connect(press)
 HUD.hitButton.MouseButton1Up:Connect(release)
 HUD.setButton.MouseButton1Down:Connect(setBall)
 HUD.diveButton.MouseButton1Down:Connect(dive)
+HUD.switchButton.MouseButton1Down:Connect(switchPlayer)
 
 ---------------------------------------------------------------- cameras
--- BROADCAST: a low chase camera behind your team that follows you and the ball.
--- SHOULDER (V): over your right shoulder, third-person-shooter style; the mouse turns it.
+-- BROADCAST: a low chase camera behind your team that follows the play.
+-- BEHIND PLAYER (V): Roblox's own camera on the player you control, with shift lock.
 
-local Cam = { focus = nil, zoom = 1, yaw = 0, pitch = -0.22, ready = false, stick = Vector2.zero, shakeUntil = 0, shakePower = 0 }
+local Cam = { focus = nil, zoom = 1, ready = false, shakeUntil = 0, shakePower = 0, mode = nil }
 
 function Cam.shake(power, seconds)
 	Cam.shakePower = math.max(Cam.shakePower, power)
 	Cam.shakeUntil = math.max(Cam.shakeUntil, os.clock() + seconds)
 end
 
-local function shoulderActive()
-	return settings.camera == "player" and not inMenu and myTeam() ~= 0 and not state.paused
-end
-
 UserInputService.InputChanged:Connect(function(input, processed)
-	if inMenu then
+	if inMenu or settings.camera ~= "broadcast" then
 		return
 	end
 	if input.UserInputType == Enum.UserInputType.MouseWheel and not processed then
 		Cam.zoom = math.clamp(Cam.zoom - input.Position.Z * 0.06, 0.6, 1.4)
-	elseif input.UserInputType == Enum.UserInputType.MouseMovement and shoulderActive() then
-		Cam.yaw -= input.Delta.X * 0.0045
-		Cam.pitch = math.clamp(Cam.pitch - input.Delta.Y * 0.0035, -1.1, 0.45)
-	elseif input.KeyCode == Enum.KeyCode.Thumbstick2 then
-		Cam.stick = Vector2.new(input.Position.X, input.Position.Y)
 	end
 end)
 
 function Cam.update(dt, ballPos)
 	if inMenu then
+		Cam.mode = nil
 		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 		return
 	end
 	local cam = workspace.CurrentCamera
 	local team = myTeam()
 	local hum, hrp = character()
-	if team == 0 or not hrp then
-		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-		if cam.CameraType ~= Enum.CameraType.Custom then
+	if team == 0 or not hrp or settings.camera == "player" then
+		-- Roblox's camera on whoever you control (shift lock works here)
+		if Cam.mode ~= "player" then
+			Cam.mode = "player"
 			cam.CameraType = Enum.CameraType.Custom
 			cam.FieldOfView = 70
-			if hum then
-				cam.CameraSubject = hum
-			end
+		end
+		local subject = hum or (player.Character and player.Character:FindFirstChildOfClass("Humanoid"))
+		if subject and cam.CameraSubject ~= subject then
+			cam.CameraSubject = subject
 		end
 		return
+	end
+	if Cam.mode ~= "broadcast" then
+		Cam.mode = "broadcast"
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 	end
 	local s = team == 1 and 1 or -1
 	local shake = Vector3.zero
@@ -273,30 +375,7 @@ function Cam.update(dt, ballPos)
 		Cam.shakePower = 0
 	end
 	cam.CameraType = Enum.CameraType.Scriptable
-
-	if settings.camera == "player" then
-		if not Cam.ready then
-			Cam.yaw = team == 1 and 0 or math.pi -- start facing the net
-			Cam.pitch = -0.22
-			Cam.ready = true
-		end
-		UserInputService.MouseBehavior = shoulderActive() and Enum.MouseBehavior.LockCenter or Enum.MouseBehavior.Default
-		if Cam.stick.Magnitude > 0.15 then
-			Cam.yaw -= Cam.stick.X * dt * 3
-			Cam.pitch = math.clamp(Cam.pitch + Cam.stick.Y * dt * 2, -1.1, 0.45)
-		end
-		local rot = CFrame.Angles(0, Cam.yaw, 0) * CFrame.Angles(Cam.pitch, 0, 0)
-		local pivot = hrp.Position + Vector3.new(0, 2.4, 0)
-		local eye = pivot + rot:VectorToWorldSpace(Vector3.new(2.6, 0.8, 9 * Cam.zoom))
-		eye = Vector3.new(eye.X, math.max(eye.Y, GY + 1.2), eye.Z)
-		cam.FieldOfView = 70
-		cam.CFrame = CFrame.new(eye + shake) * rot
-		return
-	end
-
-	Cam.ready = false
-	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-	-- follow a point between you and the ball, kept on the court
+	-- follow a point between your player and the ball, kept on the court
 	local ballOnOurSide = (ballPos.Z - C.Z) * s > 0
 	local blend = ballOnOurSide and 0.45 or 0.3
 	local target = hrp.Position:Lerp(ballPos, blend)
@@ -316,6 +395,8 @@ local function updatePrompts()
 		return
 	end
 	local pad = lastInput == "pad"
+	local ctrl = myControl()
+	local switching = ctrl and ctrl.mode == "switch"
 	if myServe() then
 		local left = math.max(0, math.ceil(state.deadline - serverNow()))
 		HUD.setPrompts({
@@ -330,10 +411,14 @@ local function updatePrompts()
 			{ pad and "R2" or "CLICK", "Pass · spike in the air" },
 			{ pad and "X" or "E", "Set · tip in the air" },
 			{ pad and "A" or "SPACE", "Jump · block at the net" },
-			{ pad and "B" or "Q", "Dive" },
+			switching and { pad and "L1" or "TAB", "Switch player" } or { pad and "B" or "Q", "Dive" },
 			ready and { pad and "Y" or "R", (me.ability or "Ability") .. " ready!" } or { pad and "UP" or "F", "Call for a quick set" },
 		})
 	else
-		HUD.setPrompts({ { pad and "START" or "M", "Pause" }, { "V", "Camera" } })
+		HUD.setPrompts({
+			{ pad and "START" or "M", "Pause" },
+			{ "V", settings.camera == "player" and "Broadcast camera" or "Behind-player camera" },
+			settings.camera == "player" and { "SHIFT", "Shift lock" } or nil,
+		})
 	end
 end

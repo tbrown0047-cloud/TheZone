@@ -5,33 +5,63 @@
 -- person or by an AI body wearing that player's name and number.
 local teams = {}
 for t = 1, 2 do
-	teams[t] = { id = t, slots = {}, score = 0, sets = 0, serveIndex = (t == 1) and 1 or 0 }
+	teams[t] = { id = t, slots = {}, score = 0, sets = 0, serveIndex = (t == 1) and 1 or 0, subs = 0 }
 	for i = 1, TEAM_SIZE do
 		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {} }
 	end
 end
-local slotOfPlayer = {}
+-- People never play with their own Roblox character: each one controls an AI body on
+-- his team. In "switch" mode he jumps to whoever plays the ball next (or presses the
+-- switch key); in "lock" mode he keeps one player all match.
+local slotOfPlayer = {} -- the body each person is controlling right now
+local controllers = {} -- person -> { team, mode = "switch" | "lock", home = slot index, auto = bool }
 local charConnections = {}
 
--- Picks the clubs and lineups; each team's AI strength comes from its overall rating
-local function configureTeams(homeId, awayId, homeLineup, awayLineup)
+local function tactic(team, key)
+	local plan = teams[team].plan
+	return plan and plan.tactics[key] or "BALANCED"
+end
+
+-- A team's AI strength from its lineup's rating, then its captain and tactics
+local function applyPlan(t)
+	local team = teams[t]
+	team.lineup = team.plan.lineup
+	team.rating = Teams.ratings(team.defId, team.lineup).OVR
+	local ai = aiForSkill(Teams.skill(team.rating))
+	if table.find(team.lineup, team.plan.captain) then
+		ai.quality = math.min(ai.quality + 0.02, 0.95)
+		ai.react = math.max(ai.react - 0.01, 0.1)
+	end
+	local block = team.plan.tactics.block
+	if block == "READ" then
+		ai.blockTry *= 0.7
+		ai.blockWin = math.min(ai.blockWin * 1.15, 0.9)
+	elseif block == "COMMIT" then
+		ai.blockTry = math.min(ai.blockTry * 1.4, 0.97)
+		ai.blockWin *= 0.9
+	end
+	team.ai = ai
+end
+
+-- Picks the clubs and their game plans (lineup, tactics and roles)
+local function configureTeams(homeId, awayId, homePlan, awayPlan)
 	for t, id in { homeId, awayId } do
 		local team = teams[t]
 		team.defId = id
 		team.def = Teams.list[id]
-		team.lineup = (t == 1 and homeLineup or awayLineup) or Teams.defaultLineup()
-		team.rating = Teams.ratings(id, team.lineup).OVR
-		team.ai = aiForSkill(Teams.skill(team.rating))
+		team.plan = Teams.cleanPlan(id, t == 1 and homePlan or awayPlan)
+		team.subs = 0
+		applyPlan(t)
 	end
 end
 configureTeams(1, 2)
 
--- The bench libero, if the club has one
+-- The libero the team has picked, if he's on the bench
 local function liberoIndex(team)
-	for i, p in Teams.squad(team.defId) do
-		if p.role == "L" and not table.find(team.lineup, i) then
-			return i
-		end
+	local index = team.plan and team.plan.libero
+	local squad = Teams.squad(team.defId)
+	if index and squad[index] and squad[index].role == "L" and not table.find(team.lineup, index) then
+		return index
 	end
 	return nil
 end
@@ -45,7 +75,7 @@ local function playerOf(slot)
 	local team = teams[slot.team]
 	local squad = Teams.squad(team.defId)
 	local p = squad[team.lineup[slot.index] or slot.index]
-	if slot.isAI and TEAM_SIZE == 6 and p and p.role == "MB" then
+	if TEAM_SIZE == 6 and p and p.role == "MB" then
 		local pos = (slot.index - team.serveIndex) % 6 + 1
 		local libero = (pos == 5 or pos == 6) and liberoIndex(team)
 		if libero then
@@ -95,8 +125,14 @@ local function homeSpot(slot, mode)
 	local s = side(slot.team)
 	if TEAM_SIZE == 6 then
 		local spot = SIX[mode == "receive" and "receive" or "defend"][rotationPos(slot)]
+		local depth = spot[2]
+		if mode ~= "receive" and depth > 0.5 then
+			-- the back row's line comes from the team's defensive tactic
+			local line = tactic(slot.team, "defense")
+			depth += line == "DEEP" and 0.1 or line == "UP" and -0.14 or 0
+		end
 		-- facing the net, a team's right is +X for HOME and -X for AWAY
-		return Vector3.new(C.X + s * spot[1] * HALF_W, GY, C.Z + s * math.max(spot[2] * HALF_L, 2.5))
+		return Vector3.new(C.X + s * spot[1] * HALF_W, GY, C.Z + s * math.max(depth * HALF_L, 2.5))
 	end
 	local x = 0
 	if TEAM_SIZE > 1 then
@@ -148,7 +184,15 @@ local SKIN = {
 	Color3.fromRGB(141, 85, 36),
 	Color3.fromRGB(94, 58, 26),
 }
-local ANIM_IDS = { idle = 507766666, walk = 507777826, run = 507767714, jump = 507765000 }
+-- Walk, run, idle, jump and fall for every body. Starts as Roblox's own; the server
+-- swaps in Config.ANIMATION_PACK once it has loaded (see the start of the match code).
+local PACK = {
+	idle = "rbxassetid://507766666",
+	walk = "rbxassetid://507777826",
+	run = "rbxassetid://507767714",
+	jump = "rbxassetid://507765000",
+	fall = "rbxassetid://507767968",
+}
 
 -- Shirt numbers on the front and back
 local function addNumber(model, number, color)
@@ -178,7 +222,7 @@ end
 -- Puts an AI body in the right shirt: the libero wears a contrasting one
 local function dressBot(slot)
 	local model = slot.model
-	if not slot.isAI or not model then
+	if not model then
 		return
 	end
 	local def = teams[slot.team].def
@@ -327,9 +371,9 @@ local function makeBot(slot)
 	local animator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator")
 	animator.Parent = hum
 	slot.tracks = {}
-	for name, id in ANIM_IDS do
+	for name, id in PACK do
 		local anim = Instance.new("Animation")
-		anim.AnimationId = "rbxassetid://" .. id
+		anim.AnimationId = id
 		local loaded, track = pcall(animator.LoadAnimation, animator, anim)
 		if loaded and track then
 			slot.tracks[name] = track
@@ -347,8 +391,9 @@ local function animateBot(slot)
 	local vel = hrp.AssemblyLinearVelocity
 	local speed = Vector3.new(vel.X, 0, vel.Z).Magnitude
 	local want = "idle"
-	if hum.FloorMaterial == Enum.Material.Air then
-		want = "jump"
+	-- a body someone else controls is simulated on his screen, so check its height too
+	if hum.FloorMaterial == Enum.Material.Air or hrp.Position.Y > standHeight(slot) + 0.8 then
+		want = (vel.Y > 1 or not tracks.fall) and "jump" or "fall"
 	elseif speed > 10 then
 		want = "run"
 	elseif speed > 1.2 then
@@ -371,112 +416,223 @@ local function animateBot(slot)
 end
 
 local function clearBody(slot)
-	if slot.isAI and slot.model then
+	if slot.model then
 		slot.model:Destroy()
 	end
 	slot.model, slot.humanoid, slot.root, slot.tracks, slot.anim, slot.align = nil, nil, nil, nil, nil, nil
 	slot.ai = {}
 end
 
-local function bindCharacter(slot, plr, char)
-	local hum = char:WaitForChild("Humanoid", 10)
-	local hrp = char:WaitForChild("HumanoidRootPart", 10)
-	if slot.player ~= plr or not hum or not hrp then
+---------------------------------------------------------------- people controlling bodies
+
+-- What a person's body can do: a little quicker than the AI so it feels responsive
+local function pilotSpeed(slot)
+	return 17 + 4 * attr01(slot, "PHY")
+end
+
+-- Hands a body back to the AI
+local function releasePilot(slot)
+	if not slot or not slot.player then
 		return
 	end
-	slot.model, slot.humanoid, slot.root = char, hum, hrp
-	task.wait(0.15)
-	if slot.player ~= plr or slot.model ~= char then
-		return
+	slot.player = nil
+	slot.isAI = true
+	slot.ai = { vel = Vector3.zero, pace = slot.ai and slot.ai.pace or 1, drift = slot.ai and slot.ai.drift or 0 }
+	if slot.root then
+		pcall(function()
+			slot.root:SetNetworkOwner(nil)
+		end)
 	end
-	if phase == "serve" and currentServer() == slot then
-		placeSlot(slot, serveSpot(slot))
-	else
-		placeSlot(slot, homeSpot(slot))
+	if slot.humanoid then
+		slot.humanoid.AutoRotate = false
+		slot.humanoid:Move(Vector3.zero)
+	end
+	if slot.align then
+		slot.align.Enabled = true
 	end
 end
 
-local function anyPeople()
-	for t = 1, 2 do
-		for _, s in teams[t].slots do
-			if s.player then
-				return true
-			end
-		end
-	end
-	return false
-end
-
--- Puts a person in a slot: the one asked for if an AI has it, else the first AI slot
--- on that team, else on the other team. Returns the slot, or nil if both teams are full.
-local function addPlayer(plr, wantTeam, wantIndex)
-	if slotOfPlayer[plr] then
-		return slotOfPlayer[plr]
-	end
-	local slot
-	local order = (wantTeam == 2) and { 2, 1 } or { 1, 2 }
-	for _, t in order do
-		local preferred = wantIndex and teams[t].slots[wantIndex]
-		if t == order[1] and preferred and preferred.isAI then
-			slot = preferred
-		end
-		for _, s in teams[t].slots do
-			if s.isAI and not slot then
-				slot = s
-			end
-		end
-		if slot then
-			break
-		end
-	end
-	if not slot then
+-- Gives a person control of a body: its physics runs on his screen so it moves at once
+local function pilotSlot(plr, slot)
+	if not slot or not slot.model or (slot.player and slot.player ~= plr) then
 		return nil
 	end
-	clearBody(slot)
-	slot.isAI = false
+	if slot.player == plr then
+		return slot
+	end
+	local old = slotOfPlayer[plr]
+	if old then
+		releasePilot(old)
+	end
 	slot.player = plr
-	slot.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
+	slot.isAI = false
 	slotOfPlayer[plr] = slot
-	if charConnections[plr] then
-		charConnections[plr]:Disconnect()
+	if slot.humanoid then
+		slot.humanoid.AutoRotate = true
+		slot.humanoid.WalkSpeed = pilotSpeed(slot)
+		slot.humanoid:Move(Vector3.zero)
 	end
-	charConnections[plr] = plr.CharacterAdded:Connect(function(char)
-		bindCharacter(slot, plr, char)
-	end)
-	if plr.Character then
-		task.spawn(bindCharacter, slot, plr, plr.Character)
+	if slot.align then
+		slot.align.Enabled = false
 	end
-	if phase == "serve" and currentServer() == slot then
-		serveDeadline = now() + Config.SERVE_TIME
+	if slot.root then
+		pcall(function()
+			slot.root:SetNetworkOwner(plr)
+		end)
 	end
 	sendState()
 	return slot
 end
 
+-- In switch mode, a person follows the play: he takes over whoever plays the ball next
+local function autoSwitch(team, slot)
+	if not slot or slot.player or not slot.model then
+		return
+	end
+	for plr, ctrl in controllers do
+		if ctrl.team == team and ctrl.mode == "switch" and ctrl.auto ~= false and slotOfPlayer[plr] ~= slot then
+			pilotSlot(plr, slot)
+			return
+		end
+	end
+end
+
+-- The free teammate nearest a point (for the switch key)
+local function nearestFree(team, point, exclude, plr)
+	local best, bestD = nil, math.huge
+	for _, s in teams[team].slots do
+		if s ~= exclude and not s.player and s.root and (s.reserved == nil or s.reserved == plr) then
+			local d = flatDist(s.root.Position, point)
+			if d < bestD then
+				best, bestD = s, d
+			end
+		end
+	end
+	return best
+end
+
+-- Your own character waits on the bench like a coach while you play
+local function parkCharacter(plr)
+	local ctrl = controllers[plr]
+	local char = plr.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not ctrl or not hrp then
+		return
+	end
+	local spot = Vector3.new(C.X + HALF_W + 8, GY + 3, C.Z + side(ctrl.team) * (10 + (ctrl.benchNo or 0) * 3))
+	hrp.Anchored = true
+	char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, spot.Z)))
+end
+
+local function unparkCharacter(plr)
+	local char = plr.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		hrp.Anchored = false
+	end
+end
+
+local function anyPeople()
+	return next(controllers) ~= nil
+end
+
+-- A free spot on a team: the one asked for, else the first nobody has
+local function freeSlot(team, want)
+	local tm = teams[team]
+	local preferred = want and tm.slots[want]
+	if preferred and not preferred.player and not preferred.reserved then
+		return preferred
+	end
+	for _, s in tm.slots do
+		if not s.player and not s.reserved then
+			return s
+		end
+	end
+	return nil
+end
+
+-- Puts a person in the match on a team. Only one person per team can switch between
+-- players; anyone else on that team is locked to one player. Returns his home slot.
+local function addPlayer(plr, wantTeam, wantIndex, mode)
+	if controllers[plr] then
+		return teams[controllers[plr].team].slots[controllers[plr].home]
+	end
+	local order = (wantTeam == 2) and { 2, 1 } or { 1, 2 }
+	for _, t in order do
+		local slot = freeSlot(t, t == order[1] and tonumber(wantIndex) or nil)
+		if slot then
+			local switching, count = false, 0
+			for _, c in controllers do
+				if c.team == t then
+					count += 1
+					switching = switching or c.mode == "switch"
+				end
+			end
+			controllers[plr] = {
+				team = t,
+				mode = (mode == "lock" or switching) and "lock" or "switch",
+				home = slot.index,
+				auto = true,
+				benchNo = count,
+			}
+			slot.reserved = plr
+			slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
+			if charConnections[plr] then
+				charConnections[plr]:Disconnect()
+			end
+			charConnections[plr] = plr.CharacterAdded:Connect(function(char)
+				char:WaitForChild("HumanoidRootPart", 10)
+				task.wait(0.2)
+				if controllers[plr] then
+					parkCharacter(plr)
+				end
+			end)
+			if slot.model then
+				-- joining a match that's already on
+				pilotSlot(plr, slot)
+				parkCharacter(plr)
+				if phase == "serve" and currentServer() == slot then
+					serveDeadline = now() + Config.SERVE_TIME
+				end
+			end
+			sendState()
+			return slot
+		end
+	end
+	return nil
+end
+
 local function removePlayer(plr)
-	local slot = slotOfPlayer[plr]
 	if charConnections[plr] then
 		charConnections[plr]:Disconnect()
 		charConnections[plr] = nil
 	end
-	if not slot then
+	local ctrl = controllers[plr]
+	if not ctrl then
 		return
 	end
+	controllers[plr] = nil
+	local slot = slotOfPlayer[plr]
 	slotOfPlayer[plr] = nil
-	slot.player = nil
-	slot.override = nil
-	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
-	slot.isAI = true
-	slot.ai = {}
+	if slot then
+		releasePilot(slot)
+	end
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.reserved == plr then
+				s.reserved = nil
+				s.override = nil
+				task.defer(dressBot, s)
+			end
+		end
+	end
+	unparkCharacter(plr)
 	if matchActive and not anyPeople() then
 		stopMatch() -- nobody left playing: back to the menu
 		return
 	end
-	if phase == "serve" and currentServer() == slot then
+	if phase == "serve" and slot and currentServer() == slot then
 		serveAt = now() + 2.5
-	end
-	if matchActive then
-		task.spawn(makeBot, slot)
 	end
 	sendState()
 end

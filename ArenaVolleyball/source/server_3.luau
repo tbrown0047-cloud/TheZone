@@ -150,23 +150,53 @@ end
 local LANE = { OH = -1, OPP = 1, MB = 0 }
 local SET_WEIGHT = { OH = 4, OPP = 3, MB = 2 }
 
--- The teammate a set goes to: a person if there is one, otherwise a front-row hitter
--- (outside hitters most often, then the opposite, then a quick ball to the middle)
+-- How often the setter looks for a hitter: his role, the team's set distribution,
+-- and the go-to hitter and quick attacker roles
+local function setWeight(slot)
+	local role = roleOf(slot)
+	local w = SET_WEIGHT[role]
+	if not w then
+		return nil
+	end
+	local team = teams[slot.team]
+	local plan = team.plan
+	if not plan then
+		return w
+	end
+	local focus = plan.tactics.focus
+	if (focus == "OUTSIDE" and role == "OH") or (focus == "MIDDLE" and role == "MB") or (focus == "OPPOSITE" and role == "OPP") then
+		w *= 2.5
+	end
+	local index = team.lineup[slot.index]
+	if not slot.override and index == plan.goto then
+		local late = math.max(team.score, teams[3 - slot.team].score) >= pointsToWin - 5
+		w *= late and 3.5 or 2.2
+	end
+	if role == "MB" and index == plan.quick then
+		w *= 1.8
+	end
+	return w
+end
+
+-- The teammate a set goes to: someone who called for it, a person locked to one player,
+-- otherwise a front-row hitter picked by the team's tactics and roles
 local function partnerOf(slot)
 	local call = teams[slot.team].call
 	if call and call.untilT > now() and call.slot ~= slot and call.slot.root then
 		return call.slot, true
 	end
-	local options, total, person = {}, 0, nil
+	local options, weights, total, person = {}, {}, 0, nil
 	for _, s in teams[slot.team].slots do
 		if s ~= slot and s.root then
-			if not s.isAI and not person then
+			local ctrl = s.player and controllers[s.player]
+			if ctrl and ctrl.mode == "lock" and not person and roleOf(s) ~= "L" then
 				person = s
 			end
-			local role = roleOf(s)
-			if isFrontRow(s) and SET_WEIGHT[role] then
+			local w = isFrontRow(s) and setWeight(s)
+			if w then
 				table.insert(options, s)
-				total += SET_WEIGHT[role]
+				table.insert(weights, w)
+				total += w
 			end
 		end
 	end
@@ -175,8 +205,8 @@ local function partnerOf(slot)
 	end
 	if #options > 0 then
 		local pick = rng:NextNumber(0, total)
-		for _, s in options do
-			pick -= SET_WEIGHT[roleOf(s)]
+		for i, s in options do
+			pick -= weights[i]
 			if pick <= 0 then
 				return s
 			end
@@ -408,14 +438,18 @@ local function shotFor(slot, kind, p, aim, q, touchNo)
 		return solve(p, ownSide(team, setSpot(team) + jitter((1 - q) * 9), 1.5), 1.25), "bump"
 	elseif kind == "set" then
 		local hitter, called = partnerOf(slot)
-		local quick = called or (hitter.isAI and roleOf(hitter) == "MB" and TEAM_SIZE == 6)
+		local tempo = tactic(team, "tempo")
+		local quick = called or (hitter.isAI and roleOf(hitter) == "MB" and TEAM_SIZE == 6 and tempo ~= "HIGH")
 		teams[team].call = nil
 		if boosted(slot, "PERFECT SET") then
 			spendBoost(slot)
 			q = 1
 			hitter.boost = { kind = "POWER SPIKE", uses = 1, untilT = now() + 6 }
 		end
-		return solve(p, ownSide(team, attackSpot(team, hitter) + jitter((1 - q) * 6), 1.5), quick and 0.8 or 1.15), "set"
+		-- the attack tempo tactic: fast sets are flatter and harder to place, high ones safer
+		local tau = quick and (tempo == "FAST" and 0.72 or 0.8) or (tempo == "FAST" and 1 or tempo == "HIGH" and 1.35 or 1.15)
+		local spread = tempo == "FAST" and 7 or tempo == "HIGH" and 4.5 or 6
+		return solve(p, ownSide(team, attackSpot(team, hitter) + jitter((1 - q) * spread), 1.5), tau), "set"
 	elseif kind == "tip" then
 		local target = aim and clampToOpp(team, aim, 0)
 			or floorPoint(3 - team, rng:NextNumber(-HALF_W + 3, HALF_W - 3), rng:NextNumber(3, 9))
@@ -442,6 +476,14 @@ local function touch(slot, kind, p, t, aim, q)
 		awardPoint(3 - team, "FOUR HITS")
 		return false
 	end
+	-- rotation rules: back-row players attack from behind the 3 m line, the libero never above the net
+	if TEAM_SIZE == 6 and kind == "spike" and p.Y > GY + NET_H then
+		local libero = roleOf(slot) == "L"
+		if libero or (not isFrontRow(slot) and (p.Z - C.Z) * side(team) < Config.COURT_LENGTH / 6) then
+			awardPoint(3 - team, libero and "LIBERO ATTACK" or "BACK-ROW ATTACK")
+			return false
+		end
+	end
 	local v, shot, power = shotFor(slot, kind, p, aim, q, n)
 	if n == 1 and ball.lastKind == "spike" then
 		if slot.stats then
@@ -465,7 +507,9 @@ local function findBlocker(team, p)
 	local s = side(team)
 	for _, sl in teams[team].slots do
 		local hrp = sl.root
-		if hrp and sl.humanoid then
+		-- only the front row may block, and never the libero
+		local legal = TEAM_SIZE ~= 6 or (isFrontRow(sl) and roleOf(sl) ~= "L")
+		if hrp and sl.humanoid and legal then
 			local rp = hrp.Position
 			local depth = (rp.Z - C.Z) * s
 			local airborne = rp.Y > standHeight(sl) + 1

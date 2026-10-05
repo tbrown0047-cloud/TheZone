@@ -55,7 +55,9 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 	elseif kind == "state" then
 		local wasServing = myServe()
 		state = a
-		local me, team = myEntry()
+		-- you're in the match while you're on the list of people playing
+		local me = myControl() ~= nil and a.active
+		local team = myTeam()
 		if not myServe() then
 			Controls.charging = false
 		elseif not wasServing then
@@ -78,7 +80,7 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		if me then
 			Menu.lastMode = a.mode
 		end
-		if inMenu and (Menu.waiting or Menu.queued) and me then
+		if inMenu and (Menu.waiting or Menu.queued) and me and myEntry() then
 			closeMenu()
 		elseif not inMenu and not me then
 			-- full time, or you were taken out of the match: back to the hub you came from
@@ -113,7 +115,7 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		end
 	elseif kind == "act" then
 		-- animation cue: your own dive and serve toss already played the moment you pressed
-		local mine = a == player.Character
+		local mine = a == controlledModel()
 		if not (mine and (b == "dive" or b == "serveprep")) then
 			Anim.play(a, b)
 		end
@@ -170,6 +172,9 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		local key = (keys[lastInput] or keys.kbm)[a] or ""
 		HUD.cueText.Text = "YOUR BALL  ·  " .. (words[a] or "PLAY IT") .. "  <font color=\"#5ef2e0\">" .. key .. "</font>"
 		HUD.cueUntil = (b or serverNow()) + 0.4
+		if typeof(c) == "Vector3" and type(b) == "number" then
+			Pilot.cue = { kind = a, tc = b, cp = c } -- movement assist runs here
+		end
 	end
 end)
 
@@ -222,7 +227,7 @@ RunService.RenderStepped:Connect(function(dt)
 		Ball.marker.Transparency = 1
 	end
 
-	local _, team = myEntry()
+	local team = myTeam()
 	local hum, hrp = character()
 	-- white outline on the ball when it's in your reach
 	local glow = false
@@ -269,7 +274,7 @@ RunService.RenderStepped:Connect(function(dt)
 	else
 		HUD.power = nil
 	end
-	Stamina.update(dt)
+	Stamina.update(dt, Pilot.update(dt))
 	if not inMenu then
 		updatePrompts()
 		HUD.update(t, pos)

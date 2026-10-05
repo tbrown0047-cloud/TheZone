@@ -11,14 +11,25 @@ end
 
 function sendState(plr)
 	local srv = (phase == "serve") and currentServer() or nil
+	-- who is playing, by user id as text (remote tables need text keys)
+	local controls = {}
+	for person, ctrl in controllers do
+		controls[tostring(person.UserId)] = { team = ctrl.team, mode = ctrl.mode, home = ctrl.home, auto = ctrl.auto ~= false }
+	end
 	local roster = { {}, {} }
 	for t = 1, 2 do
 		for _, s in teams[t].slots do
 			local p = playerOf(s)
 			local st = s.stats or {}
+			local index = teams[t].lineup[s.index]
 			table.insert(roster[t], {
 				index = s.index,
-				name = s.player and string.upper(s.player.DisplayName) or (p and p.last or "PLAYER"),
+				squad = index,
+				name = p and p.last or "PLAYER",
+				ctrl = s.player and s.player.DisplayName or nil,
+				captain = teams[t].plan and index == teams[t].plan.captain and p and p.role ~= "L" or nil,
+				rot = rotationPos(s),
+				front = isFrontRow(s),
 				number = p and p.number or s.index,
 				role = p and p.role or "OH",
 				ovr = p and p.ovr or 70,
@@ -57,6 +68,10 @@ function sendState(plr)
 		pausedAt = pausedAt,
 		pausedBy = pausedBy,
 		mode = matchContext and matchContext.mode or "quick",
+		plans = { teams[1].plan, teams[2].plan },
+		subs = { teams[1].subs, teams[2].subs },
+		subsMax = Config.SUBS_PER_SET or 6,
+		controls = controls,
 	}
 	if plr then
 		remote:FireClient(plr, "state", data)
@@ -86,9 +101,12 @@ function setupServe()
 	if not (srv.isAI and srv.root and flatDist(srv.root.Position, serveSpot(srv)) < 4) then
 		placeSlot(srv, serveSpot(srv))
 	end
-	srv.ai.jumpServe = rng:NextNumber() < teamAI(srv.team).jumpServe * (0.6 + 0.8 * attr01(srv, "SRV"))
+	local style = tactic(srv.team, "serve")
+	local styleJump = style == "AGGRESSIVE" and 1.6 or style == "SAFE" and 0.5 or 1
+	srv.ai.jumpServe = rng:NextNumber() < teamAI(srv.team).jumpServe * styleJump * (0.6 + 0.8 * attr01(srv, "SRV"))
 	srv.ai.serveJumped = false
 	srv.ai.prepped = false
+	autoSwitch(srv.team, srv) -- in switch mode you serve for your team
 	sendBall()
 	sendState()
 end
@@ -113,7 +131,7 @@ end
 local function moveOffCourt(plr)
 	local char = plr.Character
 	if char and char.PrimaryPart then
-		local spot = Vector3.new(C.X + HALF_W + 24, GY + 4, C.Z)
+		local spot = Vector3.new(C.X + HALF_W + 10, GY + 4, C.Z + HALF_L + 12)
 		char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, C.Z)))
 	end
 end
@@ -123,12 +141,9 @@ function stopMatch()
 	local finished = phase == "matchover"
 	local winner = teams[1].sets > teams[2].sets and 1 or 2
 	local results = {}
-	for t = 1, 2 do
-		for _, s in teams[t].slots do
-			if s.player then
-				table.insert(results, { player = s.player, team = t, stats = s.stats or {}, won = t == winner })
-			end
-		end
+	for plr, ctrl in controllers do
+		local home = teams[ctrl.team].slots[ctrl.home]
+		table.insert(results, { player = plr, team = ctrl.team, stats = home and home.stats or {}, won = ctrl.team == winner })
 	end
 	local context = matchContext
 	matchContext = nil
@@ -138,20 +153,20 @@ function stopMatch()
 	ball.live = false
 	ball.mode = "hidden"
 	ball.holder = nil
+	for plr in controllers do
+		if charConnections[plr] then
+			charConnections[plr]:Disconnect()
+			charConnections[plr] = nil
+		end
+		unparkCharacter(plr)
+		moveOffCourt(plr)
+	end
+	table.clear(controllers)
+	table.clear(slotOfPlayer)
 	for t = 1, 2 do
 		for _, s in teams[t].slots do
-			local plr = s.player
-			if plr then
-				slotOfPlayer[plr] = nil
-				if charConnections[plr] then
-					charConnections[plr]:Disconnect()
-					charConnections[plr] = nil
-				end
-				-- forget the person's character before clearing, so it isn't destroyed
-				s.player, s.model, s.humanoid, s.root, s.align = nil, nil, nil, nil, nil
-				s.isAI = true
-				moveOffCourt(plr)
-			end
+			s.player, s.reserved = nil, nil
+			s.isAI = true
 			s.override, s.meter, s.boost = nil, 0, nil
 			clearBody(s)
 		end
@@ -205,13 +220,18 @@ end
 local function aiServe(slot, jumped)
 	local ai = teamAI(slot.team)
 	local serve = attr01(slot, "SRV")
-	local lo = math.clamp(ai.serveLo + (serve - 0.5) * 0.15, 0.2, 0.86)
-	local hi = math.clamp(ai.serveHi + (serve - 0.5) * 0.15, lo + 0.05, 0.92)
+	-- serve strategy: safe serves are softer and rarely missed, aggressive ones the opposite
+	local style = tactic(slot.team, "serve")
+	local shift = style == "AGGRESSIVE" and 0.06 or style == "SAFE" and -0.09 or 0
+	local faults = style == "AGGRESSIVE" and 1.6 or style == "SAFE" and 0.45 or 1
+	local margin = ai.margin + 1 + (style == "AGGRESSIVE" and -0.8 or style == "SAFE" and 1 or 0)
+	local lo = math.clamp(ai.serveLo + shift + (serve - 0.5) * 0.15, 0.2, 0.88)
+	local hi = math.clamp(ai.serveHi + shift + (serve - 0.5) * 0.15, lo + 0.05, 0.93)
 	local power = rng:NextNumber(lo, hi)
-	if rng:NextNumber() < ai.fault * (1.5 - serve) then
+	if rng:NextNumber() < ai.fault * faults * (1.5 - serve) then
 		power = rng:NextNumber() < 0.5 and 0.05 or 0.99
 	end
-	doServe(slot, smartTarget(slot.team, ai.margin + 1), power, jumped == true, slot.root.Position)
+	doServe(slot, smartTarget(slot.team, math.max(margin, 1)), power, jumped == true, slot.root.Position)
 end
 
 local function updateMatch(t)
@@ -219,6 +239,7 @@ local function updateMatch(t)
 		setupServe()
 	elseif phase == "setover" and t >= phaseUntil then
 		teams[1].score, teams[2].score = 0, 0
+		teams[1].subs, teams[2].subs = 0, 0 -- substitutions are counted per set
 		setupServe()
 	elseif phase == "matchover" and t >= phaseUntil then
 		stopMatch()
@@ -451,6 +472,10 @@ local function planRally(team, t, brain)
 					if not sl.isAI then
 						d -= 3 -- leave it to a nearby person
 					end
+					if kind == "spike" and TEAM_SIZE == 6 then
+						-- the front row attacks; the libero never does
+						d += (role == "L" and 20) or (isFrontRow(sl) and -4) or 4
+					end
 					if kind == "set" and role == "S" then
 						d -= 12 -- the setter takes the second ball
 					elseif kind == "bump" and n == 1 then
@@ -467,9 +492,16 @@ local function planRally(team, t, brain)
 					end
 				end
 			end
+			-- an AI in the back row (or the libero) plays it over instead of attacking at the net
+			if who and who.isAI and kind == "spike" and TEAM_SIZE == 6 and (not isFrontRow(who) or roleOf(who) == "L") then
+				kind = "bump"
+				tc = math.max(heightTime(GY + 3) or t, t)
+				cp = ballPos(tc)
+			end
 			brain.kind, brain.tc, brain.cp, brain.who = kind, tc, cp, who
+			autoSwitch(team, who) -- in switch mode you take over whoever plays it
 			if who and who.player then
-				remote:FireClient(who.player, "cue", (n == 3 and kind == "bump") and "over" or kind, tc)
+				remote:FireClient(who.player, "cue", (n == 3 and kind == "bump") and "over" or kind, tc, cp)
 			end
 		end
 		local who, kind, tc, cp = brain.who, brain.kind, brain.tc, brain.cp
@@ -555,6 +587,14 @@ local function planRally(team, t, brain)
 			if brain.blockId ~= ball.id then
 				brain.blockId = ball.id
 				brain.blockGo = rng:NextNumber() < ai.blockTry
+				-- in switch mode you take the front-row blocker nearest the attack
+				local nearest, bestX = nil, math.huge
+				for _, sl in tm.slots do
+					if sl.root and isFrontRow(sl) and roleOf(sl) ~= "L" and math.abs(sl.root.Position.X - cpo.X) < bestX then
+						nearest, bestX = sl, math.abs(sl.root.Position.X - cpo.X)
+					end
+				end
+				autoSwitch(team, nearest)
 			end
 			local blockers = {}
 			if brain.blockGo then
@@ -640,42 +680,49 @@ local function aiTeam(team, t, dt)
 	end
 	brain.orders = orders
 	for _, sl in tm.slots do
-		if sl.isAI and sl.humanoid and sl.root then
-			steer(sl, orders[sl] or { pos = homeSpot(sl) }, t, dt, lookAt)
-			animateBot(sl)
+		if sl.humanoid and sl.root then
+			if sl.isAI then
+				steer(sl, orders[sl] or { pos = homeSpot(sl) }, t, dt, lookAt)
+			end
+			animateBot(sl) -- bodies people control are animated here too
 		end
 	end
 end
 
 ---------------------------------------------------------------- starting and joining from the menu
 
--- spec: { home, away, lineup, points, sets, mode, players = { { player, team, slot, override } } }
+-- spec: { mode, home, away, plan, points, sets, players = { { player, team, slot, override, control } } }
 local function beginMatch(spec)
-	configureTeams(spec.home, spec.away, spec.lineup, nil)
+	for t = 1, 2 do
+		for _, sl in teams[t].slots do
+			clearBody(sl)
+			sl.player, sl.reserved, sl.override = nil, nil, nil
+			sl.isAI = true
+			sl.meter, sl.boost = 0, nil
+		end
+	end
+	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan)
 	pointsToWin = spec.points or Config.POINTS_TO_WIN
 	setsToWin = spec.sets or Config.SETS_TO_WIN
 	matchContext = spec
 	matchActive = true
 	phase = "setup"
 	for _, entry in spec.players do
-		local slot = addPlayer(entry.player, entry.team, entry.slot)
+		local slot = addPlayer(entry.player, entry.team, entry.slot, entry.control)
 		if slot then
 			slot.override = entry.override
 		end
 	end
 
-	-- AI bodies for everyone else, built together
+	-- a body for every player, built together
 	local building = 0
 	for t = 1, 2 do
 		for _, sl in teams[t].slots do
-			if sl.isAI then
-				clearBody(sl)
-				building += 1
-				task.spawn(function()
-					makeBot(sl)
-					building -= 1
-				end)
-			end
+			building += 1
+			task.spawn(function()
+				makeBot(sl)
+				building -= 1
+			end)
 		end
 	end
 	sendState()
@@ -683,9 +730,18 @@ local function beginMatch(spec)
 	while building > 0 and waited < 12 do
 		waited += task.wait(0.1)
 	end
-	if matchActive then
-		startMatch()
+	if not matchActive then
+		return
 	end
+	-- everyone takes control of his player; characters wait on the bench
+	for plr, ctrl in controllers do
+		local home = teams[ctrl.team].slots[ctrl.home]
+		if not pilotSlot(plr, home) then
+			pilotSlot(plr, nearestFree(ctrl.team, C, nil, plr))
+		end
+		parkCharacter(plr)
+	end
+	startMatch()
 end
 
 local function quickPlay(plr, data)
@@ -700,11 +756,63 @@ local function quickPlay(plr, data)
 		mode = "quick",
 		home = home,
 		away = away,
-		lineup = Teams.validLineup(data.lineup) and data.lineup or Teams.defaultLineup(),
+		plan = type(data.plan) == "table" and data.plan or { lineup = data.lineup },
 		points = (points == 15 or points == 21 or points == 25) and points or nil,
 		sets = (sets == 1 or sets == 2 or sets == 3) and sets or nil,
-		players = { { player = plr, team = 1, slot = math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE) } },
+		players = { {
+			player = plr,
+			team = 1,
+			slot = math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE),
+			control = data.control == "lock" and "lock" or "switch",
+		} },
 	})
+end
+
+-- Substitution: a bench player comes on for one on the court (his body is rebuilt)
+local function substitute(plr, data)
+	local ctrl = controllers[plr]
+	if not ctrl then
+		return
+	end
+	local team = teams[ctrl.team]
+	local outIndex, inIndex = tonumber(data.out), tonumber(data.into)
+	local at = outIndex and table.find(team.lineup, outIndex)
+	local squad = Teams.squad(team.defId)
+	if not at or not inIndex or not squad[inIndex] or table.find(team.lineup, inIndex) or inIndex == team.plan.libero then
+		return
+	end
+	if team.subs >= (Config.SUBS_PER_SET or 6) then
+		remote:FireClient(plr, "notice", "No substitutions left this set")
+		return
+	end
+	local target = team.slots[at]
+	if (target.reserved and target.reserved ~= plr) or (target.player and target.player ~= plr) then
+		remote:FireClient(plr, "notice", "Another player is controlling him")
+		return
+	end
+	if ctrl.mode == "lock" and target.index == ctrl.home then
+		remote:FireClient(plr, "notice", "You can't take off the player you're locked to")
+		return
+	end
+	if target.player == plr then
+		-- you were on this body: move to a teammate while he goes off
+		local other = nearestFree(ctrl.team, target.root and target.root.Position or C, target, plr)
+		if not other or not pilotSlot(plr, other) then
+			return
+		end
+	end
+	local lineup = table.clone(team.lineup)
+	lineup[at] = inIndex
+	local plan = table.clone(team.plan)
+	plan.lineup = lineup
+	team.plan = Teams.cleanPlan(team.defId, plan)
+	applyPlan(ctrl.team)
+	team.subs += 1
+	target.meter, target.boost = 0, nil
+	clearBody(target)
+	task.spawn(makeBot, target)
+	banner("SUBSTITUTION", "ON " .. squad[inIndex].last .. "   ·   OFF " .. squad[outIndex].last, ctrl.team)
+	sendState()
 end
 
 ---------------------------------------------------------------- input from players
@@ -722,28 +830,84 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		if data.mode == "career" or data.mode == "online" then
 			return -- handled with the career and online code
 		end
-		if not slotOfPlayer[plr] then
+		if not controllers[plr] then
 			if matchActive then
-				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot))
+				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot), data.control)
 			else
 				quickPlay(plr, data)
 			end
 		end
 		return
 	elseif action == "leave" then
-		if slotOfPlayer[plr] then
+		if controllers[plr] then
 			removePlayer(plr)
 			moveOffCourt(plr)
 		end
 		return
 	end
 
-	local slot = slotOfPlayer[plr]
-	if not matchActive or not slot or not slot.root or not slot.humanoid then
+	local ctrl = controllers[plr]
+	if not matchActive or not ctrl then
 		return
 	end
+	-- things you can do from the pause menu
 	if action == "pause" then
 		setPaused(data.on == true, plr.DisplayName)
+		return
+	elseif action == "sub" then
+		substitute(plr, data)
+		return
+	elseif action == "plan" then
+		-- tactics and roles during the match (the lineup changes only by substitution)
+		local team = teams[ctrl.team]
+		local plan = table.clone(team.plan)
+		if type(data.tactics) == "table" then
+			plan.tactics = data.tactics
+		end
+		for _, r in Teams.ROLE_SLOTS do
+			if data[r.key] ~= nil then
+				plan[r.key] = data[r.key]
+			end
+		end
+		team.plan = Teams.cleanPlan(team.defId, plan)
+		applyPlan(ctrl.team)
+		sendState()
+		return
+	elseif action == "control" then
+		-- switch between players, or lock to the one you have now
+		if data.mode == "lock" then
+			local current = slotOfPlayer[plr]
+			if current and (not current.reserved or current.reserved == plr) then
+				for _, s in teams[ctrl.team].slots do
+					if s.reserved == plr then
+						s.reserved = nil
+					end
+				end
+				current.reserved = plr
+				ctrl.home = current.index
+			end
+			ctrl.mode = "lock"
+		elseif data.mode == "switch" then
+			local taken = false
+			for other, c in controllers do
+				if other ~= plr and c.team == ctrl.team and c.mode == "switch" then
+					taken = true
+				end
+			end
+			if taken then
+				remote:FireClient(plr, "notice", "A teammate is already switching between players")
+			else
+				ctrl.mode = "switch"
+			end
+		end
+		if data.auto ~= nil then
+			ctrl.auto = data.auto == true
+		end
+		sendState()
+		return
+	end
+	local slot = slotOfPlayer[plr]
+	if not slot or not slot.root or not slot.humanoid then
 		return
 	elseif paused then
 		return -- nothing moves while the match is paused
@@ -806,27 +970,21 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 	elseif action == "ability" then
 		activateAbility(slot)
+	elseif action == "switch" then
+		if ctrl.mode == "switch" then
+			local point = ball.mode == "fly" and ballPos(t) or ball.restPos
+			local target = tonumber(data.index) and teams[ctrl.team].slots[tonumber(data.index)]
+			if not target or target.player or (target.reserved and target.reserved ~= plr) then
+				target = nearestFree(ctrl.team, point, slot, plr)
+			end
+			pilotSlot(plr, target)
+		else
+			remote:FireClient(plr, "notice", "You're locked to one player (change it in the pause menu)")
+		end
 	elseif action == "call" then
 		-- calling for a quick set: the next set comes to you, fast and low
 		teams[slot.team].call = { slot = slot, untilT = t + 4 }
 		remote:FireClient(plr, "called")
-	elseif action == "sub" then
-		local team = teams[slot.team]
-		local outIndex, inIndex = tonumber(data.out), tonumber(data.into)
-		local at = outIndex and table.find(team.lineup, outIndex)
-		local squad = Teams.squad(team.defId)
-		if not at or not inIndex or not squad[inIndex] or table.find(team.lineup, inIndex) then
-			return
-		end
-		local target = team.slots[at]
-		if not target or not target.isAI then
-			return -- people can't be substituted
-		end
-		team.lineup[at] = inIndex
-		clearBody(target)
-		task.spawn(makeBot, target)
-		banner("SUBSTITUTION", "ON " .. squad[inIndex].last .. "   ·   OFF " .. squad[outIndex].last, slot.team)
-		sendState()
 	end
 end)
 
@@ -846,6 +1004,113 @@ end
 clientTemplate:Clone().Parent = StarterPlayer:WaitForChild("StarterPlayerScripts")
 for _, plr in Players:GetPlayers() do
 	task.spawn(giveClient, plr)
+end
+
+-- shift lock for the "behind player" camera
+pcall(function()
+	StarterPlayer.EnableMouseLockOption = true
+end)
+local function allowShiftLock(plr)
+	pcall(function()
+		plr.DevEnableMouseLock = true
+	end)
+end
+
+-- The animation pack (Config.ANIMATION_PACK): read the bundle's outfit for its animation
+-- assets, build one body with them, and take the animation IDs Roblox puts in it
+local PACK_FIELDS = { "IdleAnimation", "WalkAnimation", "RunAnimation", "JumpAnimation", "FallAnimation", "ClimbAnimation", "SwimAnimation" }
+local packDescription = nil -- the pack's animation assets, put on people's characters too
+
+local function applyPackTo(char)
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not packDescription or not hum then
+		return
+	end
+	pcall(function()
+		local desc = hum:GetAppliedDescription()
+		for _, field in PACK_FIELDS do
+			if packDescription[field] ~= 0 then
+				desc[field] = packDescription[field]
+			end
+		end
+		hum:ApplyDescription(desc)
+	end)
+end
+
+task.spawn(function()
+	local bundleId = tonumber(Config.ANIMATION_PACK) or 0
+	if bundleId <= 0 then
+		return
+	end
+	local AssetService = game:GetService("AssetService")
+	local ok, details = pcall(AssetService.GetBundleDetailsAsync, AssetService, bundleId)
+	if not ok or type(details) ~= "table" then
+		warn("[Arena Volleyball] Couldn't read the animation pack: " .. tostring(details))
+		return
+	end
+	local desc = nil
+	for _, item in details.Items or {} do
+		if item.Type == "UserOutfit" then
+			local got, outfit = pcall(Players.GetHumanoidDescriptionFromOutfitId, Players, item.Id)
+			if got and outfit then
+				desc = outfit
+				break
+			end
+		end
+	end
+	if not desc then
+		-- no outfit in the bundle: match its animations by name
+		desc = Instance.new("HumanoidDescription")
+		local words = { idle = "IdleAnimation", walk = "WalkAnimation", run = "RunAnimation", jump = "JumpAnimation", fall = "FallAnimation", climb = "ClimbAnimation", swim = "SwimAnimation" }
+		for _, item in details.Items or {} do
+			if item.Type == "Asset" then
+				for word, field in words do
+					if string.find(string.lower(item.Name or ""), word) then
+						desc[field] = item.Id
+					end
+				end
+			end
+		end
+	end
+	local probe = Instance.new("HumanoidDescription")
+	for _, field in PACK_FIELDS do
+		probe[field] = desc[field]
+	end
+	local built, model = pcall(Players.CreateHumanoidModelFromDescription, Players, probe, Enum.HumanoidRigType.R15)
+	local animate = built and model and model:FindFirstChild("Animate")
+	if not animate then
+		warn("[Arena Volleyball] Couldn't load the animation pack's animations")
+		return
+	end
+	local found = 0
+	for _, name in { "idle", "walk", "run", "jump", "fall" } do
+		local holder = animate:FindFirstChild(name)
+		local anim = holder and holder:FindFirstChildWhichIsA("Animation")
+		if anim and anim.AnimationId ~= "" then
+			PACK[name] = anim.AnimationId
+			found += 1
+		end
+	end
+	model:Destroy()
+	packDescription = probe
+	shared:SetAttribute("PackIdle", PACK.idle)
+	print("[Arena Volleyball] Animation pack loaded (" .. found .. " animations)")
+	for _, plr in Players:GetPlayers() do
+		applyPackTo(plr.Character)
+	end
+end)
+
+-- people's own characters move with the pack too
+local function watchPlayer(plr)
+	allowShiftLock(plr)
+	plr.CharacterAppearanceLoaded:Connect(applyPackTo)
+	if plr.Character then
+		task.spawn(applyPackTo, plr.Character)
+	end
+end
+Players.PlayerAdded:Connect(watchPlayer)
+for _, plr in Players:GetPlayers() do
+	watchPlayer(plr)
 end
 
 -- a plain body the menus dress in team kits

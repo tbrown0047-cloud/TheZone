@@ -7,40 +7,43 @@ local sel = {
 	home = 1,
 	away = 2,
 	slot = 2,
-	lineup = Teams.defaultLineup(),
+	plan = Teams.cleanPlan(1, nil), -- lineup, tactics and roles for your club
 	points = Config.POINTS_TO_WIN,
 	sets = Config.SETS_TO_WIN,
 	side = 1,
 }
+sel.lineup = sel.plan.lineup
 local history = {} -- results this session: { home, away, winner, score }
+
+-- a fresh game plan when you pick another club
+local function resetPlan()
+	sel.plan = Teams.cleanPlan(sel.home, nil)
+	sel.lineup = sel.plan.lineup
+	sel.slot = 2
+end
 
 Menu.gui = make("ScreenGui", {
 	Name = "VolleyballMenu",
 	ResetOnSpawn = false,
-	IgnoreGuiInset = true,
+	IgnoreGuiInset = false,
 	DisplayOrder = 5,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, player:WaitForChild("PlayerGui"))
+-- the menus sit below Roblox's own buttons along the top
+pcall(function()
+	Menu.gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets
+end)
 
--- background: deep purple with neon swooshes
+-- background: a deep navy gradient with a soft light from the top (it reaches past the
+-- safe area so it fills the whole screen)
 do
-	local bg = frame({ Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1) }, Menu.gui)
-	gradient(bg, COL.bg1, COL.bg2, 35)
-	local floorGlow = frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.3), BackgroundColor3 = Color3.fromRGB(10, 8, 40) }, bg)
-	make("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(1, 0.25) }, floorGlow)
-	local streaks = {
-		{ 0.16, 0.2, 0.8, 0.04, COL.teal, 0.2 },
-		{ 0.06, 0.32, 0.7, 0.07, COL.pink, 0.4 },
-		{ 0.22, 0.1, 0.95, 0.012, COL.cyan, 0.3 },
-		{ 0.66, 0.12, 0.7, 0.025, COL.violet, 0.5 },
-		{ 0.8, 0.74, 0.6, 0.016, COL.teal, 0.55 },
-		{ 0.3, 0.9, 0.9, 0.01, COL.pink, 0.5 },
-	}
-	for _, st in streaks do
-		local f = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(st[1], st[2]), Size = UDim2.fromScale(st[3], st[4]), Rotation = -28, BackgroundColor3 = st[5], BackgroundTransparency = st[6] }, bg)
-		make("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1) }) }, f)
-		round(f, 40)
-	end
+	local bg = frame({ Position = UDim2.new(0, -300, 0, -300), Size = UDim2.new(1, 600, 1, 600), BackgroundColor3 = Color3.new(1, 1, 1) }, Menu.gui)
+	gradient(bg, COL.bg1, COL.bg2, 90)
+	local glow = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 300), Size = UDim2.new(0.8, 0, 0.45, 0), BackgroundColor3 = COL.violet, BackgroundTransparency = 0.82 }, bg)
+	make("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(0, 1) }, glow)
+	round(glow, 400)
+	local floorLine = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -300), Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = COL.teal, BackgroundTransparency = 0.7 }, bg)
+	make("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1) }) }, floorLine)
 end
 
 -- everything is laid out on a 1280 x 720 board scaled to the screen
@@ -48,10 +51,14 @@ local board = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.from
 do
 	local scale = make("UIScale", { Scale = 1 }, board)
 	local function fit()
-		local vp = workspace.CurrentCamera.ViewportSize
-		scale.Scale = math.min(vp.X / 1280, vp.Y / 720)
+		local size = Menu.gui.AbsoluteSize
+		if size.X < 10 then
+			size = workspace.CurrentCamera.ViewportSize
+		end
+		scale.Scale = math.min(size.X / 1280, size.Y / 720)
 	end
 	fit()
+	Menu.gui:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
 	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(fit)
 end
 Menu.board = board
@@ -96,13 +103,14 @@ end)
 ---------------------------------------------------------------- menu building blocks
 
 function Menu.tile(parent, pos, size, onClick)
-	local t = button({ Position = pos, Size = size, BackgroundTransparency = 0.12, BackgroundColor3 = COL.panel, ClipsDescendants = true }, parent)
-	local stroke = outline(t, COL.line, 1, 0.45)
+	local t = button({ Position = pos, Size = size, BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel, ClipsDescendants = true }, parent)
+	round(t, 10)
+	local stroke = outline(t, COL.line, 1, 0.65)
 	t.MouseEnter:Connect(function()
 		stroke.Color, stroke.Transparency, stroke.Thickness = COL.teal, 0, 2
 	end)
 	t.MouseLeave:Connect(function()
-		stroke.Color, stroke.Transparency, stroke.Thickness = COL.line, 0.45, 1
+		stroke.Color, stroke.Transparency, stroke.Thickness = COL.line, 0.65, 1
 	end)
 	if onClick then
 		t.Activated:Connect(onClick)
@@ -125,9 +133,10 @@ function Menu.title(parent, str, size, pos)
 end
 
 function Menu.chip(parent, label, pos, color, textColor)
-	local c = frame({ Position = pos, Size = UDim2.fromOffset(#label * 8 + 22, 24), BackgroundColor3 = color or COL.gold }, parent)
-	round(c, 3)
-	text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = 12, TextColor3 = textColor or COL.ink }, c)
+	local c = frame({ Position = pos, Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = color or COL.teal }, parent)
+	round(c, 12)
+	make("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, c)
+	text({ Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, Text = label, FontFace = FONT.title, TextSize = 12, TextColor3 = textColor or COL.ink }, c)
 	return c
 end
 
@@ -135,12 +144,14 @@ local TABS = { "HOME", "PLAY", "ONLINE", "CUSTOMISE" }
 local TAB_SCREEN = { "home", "play", "online", "customise" }
 function Menu.tabs(parent, pos, names, active, onPick, width)
 	width = width or 112
-	local bar = frame({ Position = pos, Size = UDim2.fromOffset(#names * width, 32), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.35 }, parent)
+	local bar = frame({ Position = pos, Size = UDim2.fromOffset(#names * width, 34), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.4 }, parent)
+	round(bar, 8)
 	for i, name in names do
-		local b = button({ Position = UDim2.fromOffset((i - 1) * width, 0), Size = UDim2.fromOffset(width, 32), BackgroundColor3 = COL.bg2, BackgroundTransparency = i == active and 0.05 or 1 }, bar)
-		text({ Size = UDim2.fromScale(1, 1), Text = name, FontFace = FONT.head, TextSize = 19, TextColor3 = i == active and COL.teal or COL.text }, b)
+		local b = button({ Position = UDim2.fromOffset((i - 1) * width, 0), Size = UDim2.fromOffset(width, 34), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i == active and 0 or 1 }, bar)
+		round(b, 8)
+		text({ Size = UDim2.fromScale(1, 1), Text = name, FontFace = FONT.title, TextSize = 16, TextColor3 = i == active and COL.text or COL.dim }, b)
 		if i == active then
-			frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.coral }, b)
+			frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 1), Size = UDim2.new(1, -24, 0, 3), BackgroundColor3 = COL.teal }, b)
 		end
 		b.Activated:Connect(function()
 			onPick(i)
@@ -157,15 +168,17 @@ end
 
 -- button hints along the bottom: { key, label, onClick }
 function Menu.hints(parent, items, pos)
-	local holder = frame({ Position = pos or UDim2.fromOffset(268, 632), Size = UDim2.fromOffset(900, 28), BackgroundTransparency = 1 }, parent)
-	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 24), VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, holder)
+	local holder = frame({ Position = pos or UDim2.fromOffset(268, 632), Size = UDim2.fromOffset(1000, 28), BackgroundTransparency = 1 }, parent)
+	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 22), VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, holder)
 	for i, item in items do
-		local chipW = math.max(26, #item[1] * 8 + 14)
-		local b = button({ Size = UDim2.fromOffset(chipW + 12 + #item[2] * 9, 28), LayoutOrder = i }, holder)
-		local chip = frame({ Position = UDim2.fromOffset(0, 2), Size = UDim2.fromOffset(chipW, 24), BackgroundColor3 = COL.text }, b)
+		-- each hint sizes itself to its text, so nothing overlaps or gets cut off
+		local b = button({ Size = UDim2.fromOffset(0, 28), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = i }, holder)
+		make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, b)
+		local chip = frame({ Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = COL.text, LayoutOrder = 1 }, b)
 		round(chip, 12)
-		text({ Size = UDim2.fromScale(1, 1), Text = item[1], FontFace = FONT.title, TextSize = 12, TextColor3 = COL.ink }, chip)
-		text({ Position = UDim2.fromOffset(chipW + 8, 0), Size = UDim2.new(1, -chipW - 8, 1, 0), Text = item[2], FontFace = FONT.head, TextSize = 19, TextXAlignment = Enum.TextXAlignment.Left }, b)
+		make("UIPadding", { PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 9) }, chip)
+		text({ Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, Text = item[1], FontFace = FONT.title, TextSize = 12, TextColor3 = COL.ink }, chip)
+		text({ Size = UDim2.fromOffset(0, 28), AutomaticSize = Enum.AutomaticSize.X, Text = item[2], FontFace = FONT.head, TextSize = 17, LayoutOrder = 2 }, b)
 		if item[3] then
 			b.Activated:Connect(item[3])
 		end
@@ -232,8 +245,9 @@ end
 
 local toast = text({
 	AnchorPoint = Vector2.new(0.5, 0),
-	Position = UDim2.new(0.5, 0, 0, 24),
-	Size = UDim2.fromOffset(420, 38),
+	Position = UDim2.new(0.5, 0, 0, 16),
+	Size = UDim2.fromOffset(0, 38),
+	AutomaticSize = Enum.AutomaticSize.X,
 	BackgroundColor3 = COL.bg1,
 	BackgroundTransparency = 1,
 	FontFace = FONT.head,
@@ -241,7 +255,8 @@ local toast = text({
 	TextTransparency = 1,
 	ZIndex = 40,
 }, Menu.gui)
-round(toast, 6)
+round(toast, 19)
+make("UIPadding", { PaddingLeft = UDim.new(0, 20), PaddingRight = UDim.new(0, 20) }, toast)
 function Menu.toast(message)
 	toast.Text = message
 	toast.TextTransparency, toast.BackgroundTransparency = 0, 0.05
@@ -350,7 +365,7 @@ function Menu.avatar(parent, props, yaw)
 		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, h * 0.04, dist), cf.Position + Vector3.new(0, h * 0.04, 0))
 		if hum then
 			local animator = hum:FindFirstChildOfClass("Animator") or make("Animator", {}, hum)
-			local anim = make("Animation", { AnimationId = "rbxassetid://507766666" })
+			local anim = make("Animation", { AnimationId = shared:GetAttribute("PackIdle") or "rbxassetid://507766666" })
 			local ok, track = pcall(animator.LoadAnimation, animator, anim)
 			if ok and track then
 				track.Looped = true
@@ -428,7 +443,7 @@ do
 	end)
 	career.BackgroundColor3 = Color3.new(1, 1, 1)
 	career.BackgroundTransparency = 0
-	gradient(career, Color3.fromRGB(30, 150, 160), COL.bg1, 115)
+	gradient(career, COL.panelHi, COL.panel, 90)
 	Menu.careerArt = Menu.avatar(career, { Position = UDim2.fromOffset(0, 62), Size = UDim2.new(1, 0, 1, -62) }, -0.25)
 	text({ Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 46), Text = "CAREER", FontFace = FONT.num, TextSize = 46, TextColor3 = COL.teal, TextStrokeTransparency = 0.6 }, career)
 	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 14), Text = "M  O  D  E", FontFace = FONT.title, TextSize = 12 }, career)
@@ -467,12 +482,13 @@ do
 	}, live)
 
 	-- settings, where the accessibility button sits
-	local settingsButton = button({ Position = UDim2.fromOffset(76, 540), Size = UDim2.fromOffset(190, 60), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, home)
-	gradient(settingsButton, COL.violet, Color3.fromRGB(110, 70, 230), 0)
+	local settingsButton = button({ Position = UDim2.fromOffset(76, 540), Size = UDim2.fromOffset(180, 60), BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel }, home)
+	round(settingsButton, 10)
+	outline(settingsButton, COL.line, 1, 0.65)
 	local disc = frame({ Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(36, 36), BackgroundColor3 = COL.teal }, settingsButton)
 	round(disc, 18)
 	Menu.icon(disc, "sliders", 20, COL.ink, UDim2.fromScale(0.5, 0.5))
-	text({ Position = UDim2.fromOffset(58, 0), Size = UDim2.fromOffset(130, 60), Text = "SETTINGS", FontFace = FONT.head, TextSize = 19, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, settingsButton)
+	text({ Position = UDim2.fromOffset(58, 0), Size = UDim2.fromOffset(110, 60), Text = "SETTINGS", FontFace = FONT.title, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left }, settingsButton)
 	settingsButton.Activated:Connect(function()
 		Menu.openSettings()
 	end)
@@ -597,24 +613,22 @@ do
 	Menu.tsSub = text({ Position = UDim2.fromOffset(72, 80), Size = UDim2.fromOffset(700, 22), Text = "TEAM SELECT", FontFace = FONT.head, TextSize = 18, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, ts)
 
 	local function panel(x)
-		local p = button({ Position = UDim2.fromOffset(x, 124), Size = UDim2.fromOffset(460, 440), BackgroundTransparency = 0.12, BackgroundColor3 = COL.panel }, ts)
-		local stroke = outline(p, COL.line, 1, 0.45)
+		local p = button({ Position = UDim2.fromOffset(x, 124), Size = UDim2.fromOffset(460, 440), BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel }, ts)
+		round(p, 10)
+		local stroke = outline(p, COL.line, 1, 0.65)
 		local content = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, p)
 		return { button = p, stroke = stroke, content = content }
 	end
 	Menu.tsLeft = panel(120)
 	Menu.tsRight = panel(700)
 	text({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(640, 300), Size = UDim2.fromOffset(120, 80), Text = "VS", FontFace = FONT.num, TextSize = 64, TextColor3 = COL.dim, TextTransparency = 0.3 }, ts)
-	local swap = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(640, 380), Size = UDim2.fromOffset(100, 34), BackgroundTransparency = 0.1, BackgroundColor3 = COL.panelHi }, ts)
-	round(swap, 17)
-	outline(swap, COL.teal, 1, 0.3)
-	text({ Size = UDim2.fromScale(1, 1), Text = "⇄  SWAP", FontFace = FONT.title, TextSize = 15 }, swap)
+	local swap = secondaryButton({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(640, 380), Size = UDim2.fromOffset(104, 36) }, ts, "⇄  SWAP", 15)
 	swap.Activated:Connect(function()
 		if state.active then
 			sel.side = 3 - sel.side
 		else
 			sel.home, sel.away = sel.away, sel.home
-			sel.lineup = Teams.defaultLineup()
+			resetPlan()
 		end
 		Menu.refreshTeams()
 	end)
@@ -631,9 +645,7 @@ do
 		end
 	end)
 
-	local continue = button({ Position = UDim2.fromOffset(980, 588), Size = UDim2.fromOffset(230, 52), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, ts)
-	gradient(continue, COL.violet, Color3.fromRGB(110, 70, 230), 0)
-	text({ Size = UDim2.fromScale(1, 1), Text = "CONTINUE  ▸", FontFace = FONT.title, TextSize = 22 }, continue)
+	local continue = primaryButton({ Position = UDim2.fromOffset(930, 588), Size = UDim2.fromOffset(230, 52) }, ts, "CONTINUE  ▸", 21)
 	continue.Activated:Connect(function()
 		Menu.openPreview()
 	end)
@@ -646,7 +658,7 @@ local function fillTeamPanel(panel, id, header, accent, canChange, onStep, chose
 	local c = panel.content
 	c:ClearAllChildren()
 	panel.stroke.Color = chosen and COL.teal or COL.line
-	panel.stroke.Transparency = chosen and 0 or 0.45
+	panel.stroke.Transparency = chosen and 0 or 0.65
 	panel.stroke.Thickness = chosen and 2 or 1
 	local def = Teams.list[id]
 	local ratings = Teams.ratings(id)
@@ -654,8 +666,8 @@ local function fillTeamPanel(panel, id, header, accent, canChange, onStep, chose
 	badge(c, id, 116, UDim2.fromOffset(230, 50), Vector2.new(0.5, 0))
 	if canChange then
 		for k, glyph in { "◀", "▶" } do
-			local arrow = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(k == 1 and 60 or 400, 108), Size = UDim2.fromOffset(46, 60), BackgroundTransparency = 0.3, BackgroundColor3 = COL.panelHi }, c)
-			round(arrow, 6)
+			local arrow = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(k == 1 and 60 or 400, 108), Size = UDim2.fromOffset(44, 56), BackgroundTransparency = 0.2, BackgroundColor3 = COL.panelHi }, c)
+			round(arrow, 8)
 			text({ Size = UDim2.fromScale(1, 1), Text = glyph, FontFace = FONT.title, TextSize = 24 }, arrow)
 			arrow.Activated:Connect(function()
 				onStep(k == 1 and -1 or 1)
@@ -687,7 +699,7 @@ local function stepTeam(field, other, d)
 	until id ~= sel[other]
 	sel[field] = id
 	if field == "home" then
-		sel.lineup = Teams.defaultLineup()
+		resetPlan()
 	end
 	Menu.refreshTeams()
 end

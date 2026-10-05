@@ -35,6 +35,10 @@ return {
 	-- Sound IDs (0 = silent): ball contact, spikes, the whistle after a point, crowd cheer
 	SOUNDS = { hit = 0, spike = 0, whistle = 0, crowd = 0 },
 
+	-- Every player (AI and people) walks, runs and idles with this animation bundle (0 = Roblox's own)
+	ANIMATION_PACK = 10739370185157, -- Garry's Animation Pack
+
+	SUBS_PER_SET = 6, -- substitutions each team may make in a set (the libero doesn't count)
 	ABILITY_CHARGE = 1, -- how fast ability meters fill (2 = twice as fast)
 	SEASON_ROUNDS = 11, -- career league: every club plays each other once
 }

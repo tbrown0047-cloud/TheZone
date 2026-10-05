@@ -132,3 +132,44 @@ for _, n in rallyTouches do
 end
 print(string.format("average touches per rally %.1f; AI players moved %.0f studs per point on average", total / math.max(#rallyTouches, 1), travelled / math.max(banners, 1) / 12))
 print("final phase: " .. phase .. "  active " .. tostring(matchActive))
+
+-- someone in switch mode on HOME (who never plays the ball): auto switching must follow the play
+do
+	local fake = { UserId = 1, DisplayName = "Tester" }
+	configureTeams(3, 4)
+	giveBodies()
+	controllers[fake] = { team = 1, mode = "switch", home = 2, auto = true }
+	pilotSlot(fake, teams[1].slots[2])
+	local switches, last, bad = 0, slotOfPlayer[fake], 0
+	matchActive = true
+	startMatch()
+	local limit = CLOCK + 60 * 4
+	while matchActive and CLOCK < limit do
+		CLOCK += dt
+		stepBodies(dt)
+		stepBall(CLOCK)
+		updateMatch(CLOCK)
+		if matchActive then
+			aiTeam(1, CLOCK, dt)
+			aiTeam(2, CLOCK, dt)
+			flushTouches()
+		end
+		if slotOfPlayer[fake] ~= last then
+			switches += 1
+			last = slotOfPlayer[fake]
+		end
+		if matchActive then
+			local piloted = 0
+			for _, s in teams[1].slots do
+				if s.player == fake then
+					piloted += 1
+				end
+			end
+			if piloted ~= 1 then
+				bad += 1
+			end
+		end
+	end
+	print(string.format("switch mode: %d switches, %d frames not controlling exactly one body (should be 0), score %d-%d (he never plays the ball)", switches, bad, teams[1].score, teams[2].score))
+	controllers[fake] = nil
+end

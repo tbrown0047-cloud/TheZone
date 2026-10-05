@@ -43,15 +43,14 @@ local function standings(rows)
 end
 
 local function panel(parent, x, y, w, h)
-	local p = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.12 }, parent)
-	outline(p, COL.line, 1, 0.45)
+	local p = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.08 }, parent)
+	round(p, 10)
+	outline(p, COL.line, 1, 0.65)
 	return p
 end
 
 local function bigButton(parent, label, pos, size, onClick)
-	local b = button({ Position = pos, Size = size, BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, parent)
-	gradient(b, COL.violet, Color3.fromRGB(110, 70, 230), 0)
-	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = 22 }, b)
+	local b, l = primaryButton({ Position = pos, Size = size }, parent, label, 20)
 	b.Activated:Connect(onClick)
 	return b, l
 end
@@ -89,7 +88,7 @@ end
 function Menu.refreshCareerNew()
 	local c = Menu.cnClub
 	c:ClearAllChildren()
-	outline(c, COL.line, 1, 0.45)
+	outline(c, COL.line, 1, 0.65)
 	local def = Teams.list[newCareer.club]
 	local ratings = Teams.ratings(newCareer.club)
 	text({ Position = UDim2.fromOffset(20, 14), Size = UDim2.fromOffset(300, 24), Text = "YOUR CLUB", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, c)
@@ -105,7 +104,7 @@ function Menu.refreshCareerNew()
 
 	local p = Menu.cnPlayer
 	p:ClearAllChildren()
-	outline(p, COL.line, 1, 0.45)
+	outline(p, COL.line, 1, 0.65)
 	text({ Position = UDim2.fromOffset(20, 14), Size = UDim2.fromOffset(300, 24), Text = "POSITION", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, p)
 	for i, role in Teams.ROLE_ORDER do
 		local chosen = newCareer.role == role
@@ -186,7 +185,7 @@ function Menu.refreshCareer()
 	-- your player
 	local c = Menu.chCard
 	c:ClearAllChildren()
-	outline(c, COL.line, 1, 0.45)
+	outline(c, COL.line, 1, 0.65)
 	shirt(c, def.primary, career.number, 70, UDim2.fromOffset(60, 60))
 	text({ Position = UDim2.fromOffset(110, 18), Size = UDim2.fromOffset(150, 28), Text = career.role, FontFace = FONT.num, TextSize = 24, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left }, c)
 	text({ Position = UDim2.fromOffset(110, 44), Size = UDim2.fromOffset(250, 22), Text = string.upper(player.DisplayName), FontFace = FONT.title, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Left }, c)
@@ -223,7 +222,7 @@ function Menu.refreshCareer()
 	-- next match
 	local n = Menu.chNext
 	n:ClearAllChildren()
-	outline(n, COL.line, 1, 0.45)
+	outline(n, COL.line, 1, 0.65)
 	local opp = opponentFor(career.club, career.round)
 	Menu.title(n, "NEXT MATCH", 30)
 	text({ Position = UDim2.fromOffset(0, 54), Size = UDim2.new(1, 0, 0, 20), Text = "ROUND " .. career.round .. " OF " .. ROUNDS .. "   ·   " .. os.date("%d %B"), FontFace = FONT.head, TextSize = 15 }, n)
@@ -266,7 +265,7 @@ function Menu.refreshCareer()
 	-- league table
 	local tbl = Menu.chTable
 	tbl:ClearAllChildren()
-	outline(tbl, COL.line, 1, 0.45)
+	outline(tbl, COL.line, 1, 0.65)
 	Menu.title(tbl, Teams.LEAGUE, 26)
 	local headers = { { "#", 14 }, { "CLUB", 44 }, { "P", 214 }, { "W", 250 }, { "L", 286 }, { "PTS", 322 } }
 	for _, h in headers do
@@ -322,7 +321,7 @@ function Menu.refreshOnline()
 	local online = profile and profile.online or { division = 10, points = 0, wins = 0, losses = 0 }
 	local d = Menu.ohDivision
 	d:ClearAllChildren()
-	outline(d, COL.line, 1, 0.45)
+	outline(d, COL.line, 1, 0.65)
 	text({ Position = UDim2.fromOffset(20, 14), Size = UDim2.fromOffset(300, 24), Text = "YOUR DIVISION", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, d)
 	local disc = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(230, 56), Size = UDim2.fromOffset(150, 150), BackgroundColor3 = Color3.new(1, 1, 1) }, d)
 	round(disc, 75)
@@ -337,7 +336,7 @@ function Menu.refreshOnline()
 
 	local s = Menu.ohSearch
 	s:ClearAllChildren()
-	outline(s, COL.line, 1, 0.45)
+	outline(s, COL.line, 1, 0.65)
 	text({ Position = UDim2.fromOffset(20, 14), Size = UDim2.fromOffset(300, 24), Text = "PLAY AS", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, s)
 	badge(s, onlineClub, 110, UDim2.fromOffset(230, 52), Vector2.new(0.5, 0))
 	if not Menu.queued then
@@ -353,7 +352,7 @@ function Menu.refreshOnline()
 		if Menu.queued then
 			remote:FireServer("online_cancel", {})
 		else
-			remote:FireServer("start", { mode = "online", club = onlineClub })
+			remote:FireServer("start", { mode = "online", club = onlineClub, plan = onlineClub == sel.home and sel.plan or nil })
 			Menu.queued = true
 			Menu.refreshOnline()
 		end

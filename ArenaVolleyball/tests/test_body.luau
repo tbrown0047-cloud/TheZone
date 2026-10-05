@@ -31,6 +31,7 @@ end
 local function reset(lastTeam, touches, lastKind)
 	EVENTS = {}
 	teams[1].score, teams[2].score = 0, 0
+	teams[1].serveIndex, teams[2].serveIndex = 1, 0 -- same rotation every test
 	ball.live = true
 	ball.lastTeam, ball.touches, ball.lastSlot, ball.lastKind = lastTeam, touches, nil, lastKind
 end
@@ -86,7 +87,7 @@ end
 
 print("== HOME blocker in the air at the net vs an AWAY spike")
 reset(2, 2, "set")
-local blocker = teams[1].slots[1]
+local blocker = teams[1].slots[3] -- front row
 blocker.isAI = false
 blocker.humanoid = { HipHeight = 2 }
 blocker.root = { Position = Vector3.new(C.X + 6, GY + 8, C.Z + 1.6), Size = Vector3.new(2, 2, 1) }
