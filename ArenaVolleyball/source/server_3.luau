@@ -236,13 +236,19 @@ local function attackSpot(team, attacker)
 	return floorPoint(team, lx, 3.5) + Vector3.new(0, ATTACK_H - R, 0)
 end
 
+-- A career player's perks (unlocked at 80 in an attribute)
+local function hasPerk(slot, name)
+	local p = playerOf(slot)
+	return p ~= nil and p.perks ~= nil and p.perks[name] == true
+end
+
 -- How hard a spike is hit: AI from the team's level, people from timing; both lifted by attack rating
 local function spikeSpeed(slot, q)
 	local attack = attr01(slot, "ATK")
 	if slot.isAI then
 		return teamAI(slot.team).spike * (0.82 + 0.36 * attack)
 	end
-	return (62 + 26 * q) * (0.9 + 0.2 * attack)
+	return (62 + 26 * q) * (0.9 + 0.2 * attack) * (hasPerk(slot, "HAMMER") and 1.08 or 1)
 end
 
 -- Animation cue for every player's screen
@@ -383,7 +389,7 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 	end
 	local d = bp - rootPos
 	local flat = Vector3.new(d.X, 0, d.Z).Magnitude
-	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5) + (boosted(slot, "SAFE HANDS") and 3 or 0)
+	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5) + (boosted(slot, "SAFE HANDS") and 3 or 0) + (hasPerk(slot, "SKY HIGH") and 0.8 or 0)
 	if flat > reach then
 		return false
 	end
@@ -413,6 +419,11 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 		if boosted(slot, "SAFE HANDS") then
 			q = math.max(q, 0.82)
 		end
+		if hasPerk(slot, "MAGNET") then
+			q += 0.08
+		end
+	elseif kind == "set" and hasPerk(slot, "MAESTRO") then
+		q += 0.1
 	end
 	return true, math.clamp(q, 0.05, 1)
 end
@@ -513,7 +524,7 @@ local function findBlocker(team, p)
 			local depth = (rp.Z - C.Z) * s
 			local airborne = rp.Y > standHeight(sl) + 1
 			local wall = boosted(sl, "IRON WALL")
-			local width = wall and 5.3 or 3.8
+			local width = (wall and 5.3 or 3.8) + (hasPerk(sl, "WALL") and 1 or 0)
 			if airborne and depth > -0.5 and depth < 5 and math.abs(rp.X - p.X) < width and p.Y < rp.Y + 5.5 and p.Y > rp.Y - 1 then
 				local win = math.min(teamAI(team).blockWin * (0.7 + 0.6 * attr01(sl, "BLK")), 0.92)
 				if not sl.isAI then
@@ -683,7 +694,7 @@ local function doServe(slot, aim, power, airborne, rootPos)
 	else
 		target += jitter(0.8 + math.max(power - 0.9, 0) * 10)
 	end
-	local tau = 1.7 + ((airborne and 0.8 or 0.95) - 1.7) * power
+	local tau = (1.7 + ((airborne and 0.8 or 0.95) - 1.7) * power) * (hasPerk(slot, "CANNON") and 0.92 or 1)
 	local ace = boosted(slot, "ACE SERVE")
 	if ace then
 		spendBoost(slot)

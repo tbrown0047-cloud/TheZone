@@ -78,6 +78,7 @@ local serveAt, serveDeadline, phaseUntil = 0, 0, 0
 local paused, pausedAt = false, 0 -- the pause menu really stops the match
 local sendState, sendBall, currentServer, setupServe, stopMatch -- defined further down
 local onMatchFinished -- career and online results, defined further down
+local cleanCustom -- Edit Player choices, defined further down
 
 ---------------------------------------------------------------- court
 
@@ -113,14 +114,15 @@ local function part(props)
 	return p
 end
 
--- floor: blue free zone around an orange court
-part({
+-- floor: blue free zone around an orange court (the look changes with Teams.COURTS)
+local courtLook = { lines = {} }
+courtLook.free = part({
 	Name = "FreeZone",
 	Size = Vector3.new(Config.COURT_WIDTH + 36, 0.4, Config.COURT_LENGTH + 46), -- 5 m at the sides, 6.5 m at the ends
 	CFrame = CFrame.new(C.X, groundY + 0.2, C.Z),
 	Color = Color3.fromRGB(34, 74, 128),
 })
-part({
+courtLook.court = part({
 	Name = "Court",
 	Size = Vector3.new(Config.COURT_WIDTH, 0.44, Config.COURT_LENGTH),
 	CFrame = CFrame.new(C.X, groundY + 0.22, C.Z),
@@ -129,7 +131,7 @@ part({
 
 local LINE = Color3.fromRGB(245, 245, 245)
 local function line(name, size, offset, transparency)
-	part({
+	courtLook.lines[#courtLook.lines + 1] = part({
 		Name = name,
 		Size = size,
 		CFrame = CFrame.new(C + offset),
@@ -248,6 +250,31 @@ do
 	end
 end
 
+-- the court style picked by whoever starts the match
+local function applyCourtStyle(index)
+	local style = Teams.COURTS[index] or Teams.COURTS[1]
+	courtLook.free.Color = style.free
+	courtLook.court.Color = style.court
+	pcall(function()
+		courtLook.court.Material = Enum.Material[style.material]
+	end)
+	for _, l in courtLook.lines do
+		l.Color = style.lines
+	end
+end
+
+-- teammates walk through each other (each team has its own collision group)
+local PhysicsService = game:GetService("PhysicsService")
+local TEAM_GROUPS = { "ArenaVolleyballHome", "ArenaVolleyballAway" }
+pcall(function()
+	for _, g in TEAM_GROUPS do
+		if not PhysicsService:IsCollisionGroupRegistered(g) then
+			PhysicsService:RegisterCollisionGroup(g)
+		end
+		PhysicsService:CollisionGroupSetCollidable(g, g, false)
+	end
+end)
+
 ---------------------------------------------------------------- shared objects for the client
 
 local shared = Instance.new("Folder")
@@ -304,14 +331,18 @@ local function applyPlan(t)
 	team.ai = ai
 end
 
--- Picks the clubs and their game plans (lineup, tactics and roles)
-local function configureTeams(homeId, awayId, homePlan, awayPlan)
+-- Picks the clubs, their game plans (lineup, tactics and roles) and their kits
+local function configureTeams(homeId, awayId, homePlan, awayPlan, homeKit, awayKit)
+	homeKit = math.clamp(math.floor(tonumber(homeKit) or 1), 1, 3)
+	local kits = { homeKit, Teams.awayKit(homeId, homeKit, awayId, tonumber(awayKit) or 2) }
 	for t, id in { homeId, awayId } do
 		local team = teams[t]
 		team.defId = id
 		team.def = Teams.list[id]
 		team.plan = Teams.cleanPlan(id, t == 1 and homePlan or awayPlan)
 		team.subs = 0
+		team.kitIndex = kits[t]
+		team.kit = Teams.kits(id)[kits[t]]
 		applyPlan(t)
 	end
 end
@@ -486,10 +517,10 @@ local function dressBot(slot)
 	if not model then
 		return
 	end
-	local def = teams[slot.team].def
+	local kit = teams[slot.team].kit
 	local p = playerOf(slot)
 	local libero = p and p.role == "L"
-	local shirtColor = libero and def.secondary or def.primary
+	local shirtColor = libero and kit.shorts or kit.shirt
 	local colors = model:FindFirstChildOfClass("BodyColors")
 	if colors then
 		colors.TorsoColor3 = shirtColor
@@ -555,17 +586,26 @@ local function simpleBody(slot)
 	return model
 end
 
+-- puts every part of a body in its team's collision group, so teammates pass through
+local function setGroup(model, group)
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.CollisionGroup = group
+		end
+	end
+end
+
 local function makeBot(slot)
-	local def = teams[slot.team].def
+	local def = teams[slot.team].kit
 	local p = playerOf(slot)
 	local desc = Instance.new("HumanoidDescription")
 	local skin = SKIN[rng:NextInteger(1, #SKIN)]
 	desc.HeadColor = skin
 	desc.LeftArmColor = skin
 	desc.RightArmColor = skin
-	desc.TorsoColor = def.primary
-	desc.LeftLegColor = def.secondary
-	desc.RightLegColor = def.secondary
+	desc.TorsoColor = def.shirt
+	desc.LeftLegColor = def.shorts
+	desc.RightLegColor = def.shorts
 	local ok, model = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R15)
 	if not ok or not model then
 		warn("[Arena Volleyball] Using a simple AI body: " .. tostring(model))
@@ -599,9 +639,10 @@ local function makeBot(slot)
 	hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
 	model:SetAttribute("VolleyballAI", true)
 	if p then
-		local light = (def.primary.R + def.primary.G + def.primary.B) > 1.8
+		local light = (def.shirt.R + def.shirt.G + def.shirt.B) > 1.8
 		addNumber(model, p.number, light and Color3.fromRGB(20, 20, 30) or Color3.new(1, 1, 1))
 	end
+	pcall(setGroup, model, TEAM_GROUPS[slot.team])
 
 	local attachment = Instance.new("Attachment")
 	attachment.Name = "FaceAttachment"
@@ -684,6 +725,71 @@ local function clearBody(slot)
 	slot.ai = {}
 end
 
+-- Your own character in your team's kit (if you chose to wear it): clothes are put
+-- away for the match and given back afterwards
+local function dressCharacter(slot, char)
+	local custom = slot.custom or {}
+	if not custom.wearKit then
+		return
+	end
+	local kit = teams[slot.team].kit
+	slot.saved = { char = char, clothes = {} }
+	for _, c in char:GetChildren() do
+		if c:IsA("Shirt") or c:IsA("Pants") or c:IsA("ShirtGraphic") then
+			table.insert(slot.saved.clothes, c)
+			c.Parent = nil
+		end
+	end
+	local colors = char:FindFirstChildOfClass("BodyColors")
+	if colors then
+		slot.saved.colors = { colors.TorsoColor3, colors.LeftLegColor3, colors.RightLegColor3 }
+		colors.TorsoColor3, colors.LeftLegColor3, colors.RightLegColor3 = kit.shirt, kit.shorts, kit.shorts
+	end
+	for _, name in { "UpperTorso", "LowerTorso", "Torso" } do
+		local part = char:FindFirstChild(name)
+		if part then
+			part.Color = kit.shirt
+		end
+	end
+	for _, name in { "LeftUpperLeg", "LeftLowerLeg", "RightUpperLeg", "RightLowerLeg", "Left Leg", "Right Leg" } do
+		local part = char:FindFirstChild(name)
+		if part then
+			part.Color = kit.shorts
+		end
+	end
+	local light = (kit.shirt.R + kit.shirt.G + kit.shirt.B) > 1.8
+	addNumber(char, custom.number or 7, light and Color3.fromRGB(20, 20, 30) or Color3.new(1, 1, 1))
+end
+
+-- gives a character its clothes and normal collisions back
+local function undressCharacter(slot)
+	if slot.groupConn then
+		slot.groupConn:Disconnect()
+		slot.groupConn = nil
+	end
+	local char = slot.player and slot.player.Character
+	if char then
+		pcall(setGroup, char, "Default")
+	end
+	local saved = slot.saved
+	slot.saved = nil
+	if not saved or not saved.char.Parent then
+		return
+	end
+	for _, d in saved.char:GetDescendants() do
+		if d:IsA("SurfaceGui") and d.Name == "ShirtNumber" then
+			d:Destroy()
+		end
+	end
+	for _, c in saved.clothes do
+		c.Parent = saved.char
+	end
+	local colors = saved.char:FindFirstChildOfClass("BodyColors")
+	if colors and saved.colors then
+		colors.TorsoColor3, colors.LeftLegColor3, colors.RightLegColor3 = saved.colors[1], saved.colors[2], saved.colors[3]
+	end
+end
+
 local function bindCharacter(slot, plr, char)
 	local hum = char:WaitForChild("Humanoid", 10)
 	local hrp = char:WaitForChild("HumanoidRootPart", 10)
@@ -691,10 +797,21 @@ local function bindCharacter(slot, plr, char)
 		return
 	end
 	slot.model, slot.humanoid, slot.root = char, hum, hrp
+	-- no bumping into teammates
+	pcall(setGroup, char, TEAM_GROUPS[slot.team])
+	if slot.groupConn then
+		slot.groupConn:Disconnect()
+	end
+	slot.groupConn = char.DescendantAdded:Connect(function(d)
+		if d:IsA("BasePart") then
+			d.CollisionGroup = TEAM_GROUPS[slot.team]
+		end
+	end)
 	task.wait(0.15)
 	if slot.player ~= plr or slot.model ~= char then
 		return
 	end
+	pcall(dressCharacter, slot, char)
 	if phase == "serve" and currentServer() == slot then
 		placeSlot(slot, serveSpot(slot))
 	else
@@ -708,7 +825,7 @@ end
 
 -- Puts a person in a slot with his own character: the one asked for if an AI has it,
 -- else the first AI slot on that team, else on the other team
-local function addPlayer(plr, wantTeam, wantIndex)
+local function addPlayer(plr, wantTeam, wantIndex, custom)
 	if slotOfPlayer[plr] then
 		return slotOfPlayer[plr]
 	end
@@ -734,6 +851,7 @@ local function addPlayer(plr, wantTeam, wantIndex)
 	clearBody(slot)
 	slot.isAI = false
 	slot.player = plr
+	slot.custom = type(custom) == "table" and custom or nil
 	slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
 	slotOfPlayer[plr] = slot
 	controllers[plr] = { team = slot.team, home = slot.index }
@@ -764,8 +882,10 @@ local function removePlayer(plr)
 		return
 	end
 	slotOfPlayer[plr] = nil
+	pcall(undressCharacter, slot)
 	slot.player = nil
 	slot.override = nil
+	slot.custom = nil
 	-- forget the character so it isn't destroyed with the body
 	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
 	slot.isAI = true
@@ -1020,13 +1140,19 @@ local function attackSpot(team, attacker)
 	return floorPoint(team, lx, 3.5) + Vector3.new(0, ATTACK_H - R, 0)
 end
 
+-- A career player's perks (unlocked at 80 in an attribute)
+local function hasPerk(slot, name)
+	local p = playerOf(slot)
+	return p ~= nil and p.perks ~= nil and p.perks[name] == true
+end
+
 -- How hard a spike is hit: AI from the team's level, people from timing; both lifted by attack rating
 local function spikeSpeed(slot, q)
 	local attack = attr01(slot, "ATK")
 	if slot.isAI then
 		return teamAI(slot.team).spike * (0.82 + 0.36 * attack)
 	end
-	return (62 + 26 * q) * (0.9 + 0.2 * attack)
+	return (62 + 26 * q) * (0.9 + 0.2 * attack) * (hasPerk(slot, "HAMMER") and 1.08 or 1)
 end
 
 -- Animation cue for every player's screen
@@ -1167,7 +1293,7 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 	end
 	local d = bp - rootPos
 	local flat = Vector3.new(d.X, 0, d.Z).Magnitude
-	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5) + (boosted(slot, "SAFE HANDS") and 3 or 0)
+	local reach = REACH + ((slot.diveUntil or 0) > t and 3.5 or 0) + (slot.isAI and 0 or 1.5) + (boosted(slot, "SAFE HANDS") and 3 or 0) + (hasPerk(slot, "SKY HIGH") and 0.8 or 0)
 	if flat > reach then
 		return false
 	end
@@ -1197,6 +1323,11 @@ local function reachCheck(slot, kind, rootPos, bp, airborne, t)
 		if boosted(slot, "SAFE HANDS") then
 			q = math.max(q, 0.82)
 		end
+		if hasPerk(slot, "MAGNET") then
+			q += 0.08
+		end
+	elseif kind == "set" and hasPerk(slot, "MAESTRO") then
+		q += 0.1
 	end
 	return true, math.clamp(q, 0.05, 1)
 end
@@ -1297,7 +1428,7 @@ local function findBlocker(team, p)
 			local depth = (rp.Z - C.Z) * s
 			local airborne = rp.Y > standHeight(sl) + 1
 			local wall = boosted(sl, "IRON WALL")
-			local width = wall and 5.3 or 3.8
+			local width = (wall and 5.3 or 3.8) + (hasPerk(sl, "WALL") and 1 or 0)
 			if airborne and depth > -0.5 and depth < 5 and math.abs(rp.X - p.X) < width and p.Y < rp.Y + 5.5 and p.Y > rp.Y - 1 then
 				local win = math.min(teamAI(team).blockWin * (0.7 + 0.6 * attr01(sl, "BLK")), 0.92)
 				if not sl.isAI then
@@ -1467,7 +1598,7 @@ local function doServe(slot, aim, power, airborne, rootPos)
 	else
 		target += jitter(0.8 + math.max(power - 0.9, 0) * 10)
 	end
-	local tau = 1.7 + ((airborne and 0.8 or 0.95) - 1.7) * power
+	local tau = (1.7 + ((airborne and 0.8 or 0.95) - 1.7) * power) * (hasPerk(slot, "CANNON") and 0.92 or 1)
 	local ace = boosted(slot, "ACE SERVE")
 	if ace then
 		spendBoost(slot)
@@ -1496,6 +1627,7 @@ end
 ---------------------------------------------------------------- match flow
 
 local matchContext = nil -- how the current match was started (quick play, career or online)
+local courtStyle = 1
 local pausedBy = ""
 
 function currentServer()
@@ -1524,7 +1656,7 @@ function sendState(plr)
 				captain = teams[t].plan and index == teams[t].plan.captain and p and p.role ~= "L" or nil,
 				rot = rotationPos(s),
 				front = isFrontRow(s),
-				number = p and p.number or s.index,
+				number = (s.custom and s.custom.number) or (p and p.number) or s.index,
 				role = p and p.role or "OH",
 				ovr = p and p.ovr or 70,
 				id = s.player and s.player.UserId or 0,
@@ -1565,6 +1697,8 @@ function sendState(plr)
 		plans = { teams[1].plan, teams[2].plan },
 		subs = { teams[1].subs, teams[2].subs },
 		subsMax = Config.SUBS_PER_SET or 6,
+		kits = { teams[1].kitIndex, teams[2].kitIndex },
+		court = courtStyle,
 		controls = controls,
 	}
 	if plr then
@@ -1654,8 +1788,10 @@ function stopMatch()
 					charConnections[plr]:Disconnect()
 					charConnections[plr] = nil
 				end
-				-- forget the person's character before clearing, so it isn't destroyed
+				-- clothes back, then forget the character so it isn't destroyed
+				pcall(undressCharacter, s)
 				s.player, s.model, s.humanoid, s.root, s.align = nil, nil, nil, nil, nil
+				s.custom = nil
 				s.isAI = true
 				moveOffCourt(plr)
 			end
@@ -1795,6 +1931,11 @@ local function steer(slot, order, t, dt, lookAt)
 		vel = vel * (1 - math.min(dt * 2.5, 1)) -- sliding out of a dive
 	else
 		local maxSpeed = ai.speed * (mem.pace or 1)
+		-- the back row covers the most ground, so it moves quicker
+		local backRow = TEAM_SIZE == 6 and not isFrontRow(slot)
+		if backRow and not order.walk then
+			maxSpeed += 3
+		end
 		if order.sprint then
 			maxSpeed += 6
 		elseif order.run then
@@ -1824,7 +1965,7 @@ local function steer(slot, order, t, dt, lookAt)
 			end
 		end
 		-- accelerate towards it instead of snapping
-		local accel = grounded and ((order.sprint or order.run) and 46 or 24) or 6
+		local accel = grounded and ((order.sprint or order.run) and (backRow and 58 or 46) or (backRow and 32 or 24)) or 6
 		local change = desired - vel
 		local maxChange = accel * dt
 		if change.Magnitude > maxChange then
@@ -2021,7 +2162,8 @@ local function planRally(team, t, brain)
 					who.humanoid.Jump = true
 				end
 			else
-				orders[who] = { pos = stand, run = true }
+				-- a long way to go: sprint for it
+				orders[who] = { pos = stand, run = true, sprint = flatDist(who.root.Position, stand) > 7 }
 				-- dive only for a ball he can't reach by running
 				local far = flatDist(who.root.Position, cp)
 				local short = far - (ai.speed + 3) * math.max(tc - t, 0)
@@ -2181,14 +2323,16 @@ local function beginMatch(spec)
 			sl.override, sl.meter, sl.boost = nil, 0, nil
 		end
 	end
-	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan)
+	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan, spec.kit, spec.awayKit)
+	courtStyle = math.clamp(math.floor(tonumber(spec.court) or 1), 1, #Teams.COURTS)
+	applyCourtStyle(courtStyle)
 	pointsToWin = spec.points or Config.POINTS_TO_WIN
 	setsToWin = spec.sets or Config.SETS_TO_WIN
 	matchContext = spec
 	matchActive = true
 	phase = "setup"
 	for _, entry in spec.players do
-		local slot = addPlayer(entry.player, entry.team, entry.slot)
+		local slot = addPlayer(entry.player, entry.team, entry.slot, entry.custom)
 		if slot then
 			slot.override = entry.override
 		end
@@ -2219,6 +2363,14 @@ local function beginMatch(spec)
 	startMatch()
 end
 
+-- your Edit Player choices: shirt number and whether you wear the team kit
+function cleanCustom(custom)
+	if type(custom) ~= "table" then
+		return nil
+	end
+	return { number = math.clamp(math.floor(tonumber(custom.number) or 7), 1, 99), wearKit = custom.wearKit == true }
+end
+
 local function quickPlay(plr, data)
 	local count = #Teams.list
 	local home = math.clamp(math.floor(tonumber(data.home) or 1), 1, count)
@@ -2229,6 +2381,8 @@ local function quickPlay(plr, data)
 	local points, sets = tonumber(data.points), tonumber(data.sets)
 	beginMatch({
 		mode = "quick",
+		kit = tonumber(data.kit),
+		court = tonumber(data.court),
 		home = home,
 		away = away,
 		plan = type(data.plan) == "table" and data.plan or { lineup = data.lineup },
@@ -2238,6 +2392,7 @@ local function quickPlay(plr, data)
 			player = plr,
 			team = 1,
 			slot = math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE),
+			custom = cleanCustom(data.custom),
 		} },
 	})
 end
@@ -2295,7 +2450,7 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		if not controllers[plr] then
 			if matchActive then
-				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot))
+				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot), cleanCustom(data.custom))
 			else
 				quickPlay(plr, data)
 			end
@@ -2582,6 +2737,7 @@ pcall(function()
 end)
 local saving = store ~= nil -- turns false if saves fail (Studio without API access)
 local profiles = {}
+local ensureCareerLater -- set once the career code below is defined
 
 local function storeFailed(err)
 	if saving then
@@ -2620,12 +2776,14 @@ local function loadProfile(plr)
 	if type(data) ~= "table" then
 		data = {}
 	end
-	data.version = 1
+	data.version = 2
 	data.online = data.online or { division = 10, points = 0, wins = 0, losses = 0 }
+	data.custom = data.custom or { number = 7, role = "OH", wearKit = false, court = 1, kits = {} }
 	if not plr.Parent then
 		return
 	end
 	profiles[plr] = data
+	pcall(ensureCareerLater, data.career)
 	sendProfile(plr)
 end
 
@@ -2713,11 +2871,149 @@ end
 
 ---------------------------------------------------------------- career
 
-local function careerOverall(career)
+local Career = {} -- the career functions, kept together
+-- A season: eleven league rounds, then the top four play semi-finals and a final.
+-- Every match gives you a rating out of 10. Ratings build your form, XP levels you up
+-- (training points), and your training focus slowly raises one attribute. Clubs send
+-- offers when you play well; objectives, awards and the inbox tell the story.
+
+Career.INBOX_MAX = 30
+Career.FOCUS_ATTRS = { "SRV", "ATK", "BLK", "REC", "SET", "PHY" }
+Career.STATUS_ORDER = { "ROTATION", "STARTER", "KEY PLAYER", "CAPTAIN" }
+
+function Career.careerOverall(career)
 	return Teams.overall(career.role, career.attrs)
 end
 
-local function createCareer(plr, data)
+function Career.news(career, title, body, kind, extra)
+	career.newsId = (career.newsId or 0) + 1
+	local item = { id = career.newsId, title = title, body = body, kind = kind or "news", season = career.season, round = career.round, read = false }
+	if extra then
+		for k, v in extra do
+			item[k] = v
+		end
+	end
+	table.insert(career.inbox, 1, item)
+	while #career.inbox > Career.INBOX_MAX do
+		table.remove(career.inbox)
+	end
+	return item
+end
+
+-- the starting six's average overall at a club
+function Career.clubLevel(club)
+	return Teams.ratings(club).OVR
+end
+
+function Career.averageForm(career)
+	local total = 0
+	for _, r in career.form do
+		total += r
+	end
+	return #career.form > 0 and total / #career.form or 6
+end
+
+-- Where you stand at your club, from how good you are next to the team and your form
+function Career.updateStatus(career, quiet)
+	local diff = career.ovr - Career.clubLevel(career.club)
+	local form = Career.averageForm(career)
+	local status = "ROTATION"
+	if diff >= 3 and form >= 7.4 and career.seasonsAtClub >= 1 then
+		status = "CAPTAIN"
+	elseif diff >= 1 or (diff >= -2 and form >= 7.2) then
+		status = "KEY PLAYER"
+	elseif diff >= -6 or form >= 6.5 then
+		status = "STARTER"
+	end
+	if status ~= career.status then
+		local up = (table.find(Career.STATUS_ORDER, status) or 1) > (table.find(Career.STATUS_ORDER, career.status) or 1)
+		if not quiet then
+			Career.news(career, up and ("You're now a " .. string.lower(status)) or ("Status: " .. string.lower(status)),
+				up and "The coach has noticed your performances. Keep it up." or "The coach wants more from you. Good ratings will win your place back.",
+				"status")
+		end
+		career.status = status
+	end
+end
+
+-- This season's targets: the board's for the club, and your own
+function Career.newObjectives(career)
+	local rank = Teams.rank(career.club)
+	local target, text
+	if rank <= 3 then
+		target, text = 1, "Win the league"
+	elseif rank <= 6 then
+		target, text = 4, "Finish in the top four (playoffs)"
+	elseif rank <= 9 then
+		target, text = 6, "Finish in the top six"
+	else
+		target, text = 8, "Finish in the top eight"
+	end
+	local personal
+	local role = career.role
+	if role == "OH" or role == "OPP" then
+		personal = { { stat = "kills", target = 35, text = "Score 35 kills" }, { stat = "aces", target = 6, text = "Serve 6 aces" } }
+	elseif role == "MB" then
+		personal = { { stat = "blocks", target = 14, text = "Make 14 blocks" }, { stat = "kills", target = 18, text = "Score 18 kills" } }
+	elseif role == "L" then
+		personal = { { stat = "digs", target = 45, text = "Make 45 digs" }, { stat = "good", target = 5, text = "Rate 7.5+ in 5 matches" } }
+	else
+		personal = { { stat = "good", target = 5, text = "Rate 7.5+ in 5 matches" }, { stat = "wins", target = 7, text = "Win 7 matches" } }
+	end
+	for _, o in personal do
+		o.progress, o.done = 0, false
+	end
+	career.objectives = { club = { target = target, text = text }, personal = personal }
+end
+
+function Career.freshSeason(career)
+	career.round = 1
+	career.phase = "league"
+	career.table = freshTable()
+	career.results = {}
+	career.playoff = nil
+	career.season_stats = { matches = 0, wins = 0, kills = 0, aces = 0, blocks = 0, digs = 0, ratings = 0 }
+	Career.newObjectives(career)
+end
+
+-- Older saves get the new fields
+function Career.ensureCareer(career)
+	if not career then
+		return
+	end
+	career.attrs = career.attrs or {}
+	for _, attr in Teams.ATTRS do
+		career.attrs[attr] = career.attrs[attr] or 60
+	end
+	career.progress = career.progress or {}
+	for _, attr in Teams.ATTRS do
+		career.progress[attr] = career.progress[attr] or 0
+	end
+	career.focus = table.find(Career.FOCUS_ATTRS, career.focus) and career.focus or "ATK"
+	career.form = career.form or {}
+	career.morale = career.morale or 70
+	career.money = career.money or 0
+	career.contract = career.contract or { years = 2, salary = 400 }
+	career.inbox = career.inbox or {}
+	career.history = career.history or {}
+	career.awards = career.awards or {}
+	career.offers = career.offers or {}
+	career.seasonsAtClub = career.seasonsAtClub or 0
+	career.stats = career.stats or { matches = 0, wins = 0, kills = 0, aces = 0, blocks = 0, digs = 0 }
+	career.trophies = career.trophies or 0
+	career.season = career.season or 1
+	if not career.season_stats or not career.objectives or not career.table then
+		Career.freshSeason(career)
+	end
+	career.round = career.round or 1
+	career.phase = career.phase or "league"
+	career.results = career.results or {}
+	career.ovr = Career.careerOverall(career)
+	career.perks = Teams.perksFor(career.attrs)
+	career.status = career.status or "STARTER"
+end
+
+function Career.createCareer(plr, data)
 	local profile = profiles[plr]
 	if not profile then
 		return
@@ -2729,7 +3025,7 @@ local function createCareer(plr, data)
 	for _, attr in Teams.ATTRS do
 		attrs[attr] = math.clamp(60 + Teams.TEMPLATE[role][attr], 40, 95)
 	end
-	profile.career = {
+	local career = {
 		club = club,
 		role = role,
 		number = number,
@@ -2738,29 +3034,60 @@ local function createCareer(plr, data)
 		level = 1,
 		points = 3,
 		season = 1,
-		round = 1,
 		trophies = 0,
-		table = freshTable(),
 		stats = { matches = 0, wins = 0, kills = 0, aces = 0, blocks = 0, digs = 0 },
+		contract = { years = 2, salary = 300 + (Teams.list[club].rating - 60) * 15 },
+		status = "ROTATION",
 	}
-	profile.career.ovr = careerOverall(profile.career)
+	Career.ensureCareer(career)
+	Career.freshSeason(career)
+	Career.updateStatus(career, true)
+	Career.news(career, "Welcome to " .. Teams.list[club].name, "You've signed a " .. career.contract.years .. "-season deal. The coach sees you as a " .. string.lower(career.status) .. " for now. Win your place with good ratings.", "welcome")
+	Career.news(career, "The board's target: " .. career.objectives.club.text, "Hit your personal targets too: " .. career.objectives.personal[1].text .. ", and " .. string.lower(career.objectives.personal[2].text) .. ".", "objective")
+	profile.career = career
 	sendProfile(plr)
 	task.spawn(saveProfile, plr)
 end
 
-local function trainCareer(plr, attr)
+-- spend a training point (from levelling up) on an attribute
+function Career.trainCareer(plr, attr)
 	local career = profiles[plr] and profiles[plr].career
 	if not career or career.points <= 0 or not table.find(Teams.ATTRS, attr) or career.attrs[attr] >= 99 then
 		return
 	end
 	career.attrs[attr] += 1
 	career.points -= 1
-	career.ovr = careerOverall(career)
+	career.ovr = Career.careerOverall(career)
+	career.perks = Teams.perksFor(career.attrs)
 	sendProfile(plr)
 end
 
-local function startCareerMatch(plr)
-	local career = profiles[plr] and profiles[plr].career
+-- adds training progress to an attribute; every 100 raises it by one
+function Career.addProgress(career, attr, amount)
+	local gains = 0
+	career.progress[attr] += amount
+	while career.progress[attr] >= 100 and career.attrs[attr] < 99 do
+		career.progress[attr] -= 100
+		career.attrs[attr] += 1
+		gains += 1
+	end
+	if career.attrs[attr] >= 99 then
+		career.progress[attr] = 0
+	end
+	return gains
+end
+
+-- the opponent in your next match: the league fixture, or your playoff opponent
+function Career.nextOpponent(career)
+	if career.phase == "semi" or career.phase == "final" then
+		return career.playoffOpp
+	end
+	return opponentFor(career.club, career.round)
+end
+
+function Career.startCareerMatch(plr)
+	local profile = profiles[plr]
+	local career = profile and profile.career
 	if not career then
 		return
 	end
@@ -2780,33 +3107,226 @@ local function startCareerMatch(plr)
 	if career.role == "L" then
 		slot = 3 -- the libero takes a middle blocker's place
 	end
+	local custom = profile.custom or {}
 	local attrs = table.clone(career.attrs)
+	local playoff = career.phase == "semi" or career.phase == "final"
 	beginMatch({
 		mode = "career",
 		home = career.club,
-		away = opponentFor(career.club, career.round),
+		away = Career.nextOpponent(career),
 		plan = { lineup = lineup, tactics = career.tactics },
+		kit = (custom.kits and custom.kits[tostring(career.club)]) or 1,
+		court = custom.court,
+		-- playoff matches are best of three
+		sets = playoff and 2 or nil,
 		players = {
 			{
 				player = plr,
 				team = 1,
 				slot = slot,
-				override = { first = "", last = string.upper(plr.DisplayName), number = career.number, role = career.role, attrs = attrs, ovr = career.ovr, hand = "Right" },
+				custom = { number = career.number, wearKit = custom.wearKit == true },
+				override = { first = "", last = string.upper(plr.DisplayName), number = career.number, role = career.role, attrs = attrs, ovr = career.ovr, hand = "Right", perks = Teams.perksFor(attrs) },
 			},
 		},
 	})
 end
 
-local function finishCareerMatch(plr, result, context)
+-- A rating out of 10 from what you did and the result
+function Career.matchRating(st, won)
+	local r = 5.8 + (st.kills or 0) * 0.32 + (st.aces or 0) * 0.5 + (st.blocks or 0) * 0.45 + (st.digs or 0) * 0.18 + (won and 0.6 or -0.2)
+	return math.floor(math.clamp(r, 3, 10) * 10 + 0.5) / 10
+end
+
+-- Clubs that want you: better clubs come in when your rating and form are high
+function Career.makeOffers(career, count, reason)
+	local form = Career.averageForm(career)
+	local candidates = {}
+	for id, def in Teams.list do
+		if id ~= career.club then
+			local gap = def.rating - career.ovr
+			-- clubs a bit better than you need good form; much weaker clubs always ask
+			if gap <= 4 + (form - 6.5) * 4 then
+				table.insert(candidates, id)
+			end
+		end
+	end
+	local made = {}
+	for _ = 1, math.min(count, #candidates) do
+		local pick = table.remove(candidates, rng:NextInteger(1, #candidates))
+		local def = Teams.list[pick]
+		local offer = {
+			id = (career.newsId or 0) + 1,
+			club = pick,
+			years = rng:NextInteger(1, 3),
+			salary = math.floor(250 + (def.rating - 60) * 18 + math.max(career.ovr - 60, 0) * 22 + form * 20),
+			status = def.rating > career.ovr + 2 and "ROTATION" or def.rating > career.ovr - 3 and "STARTER" or "KEY PLAYER",
+			expires = career.season * 100 + career.round + 3,
+		}
+		Career.news(career, def.name .. " want to sign you", string.format("%s offer a %d-season deal at %d a match. You'd join as a %s. (%s)", def.name, offer.years, offer.salary, string.lower(offer.status), reason), "offer", { offer = offer })
+		table.insert(made, offer)
+	end
+	return made
+end
+
+function Career.offerById(career, id)
+	for _, item in career.inbox do
+		if item.offer and item.offer.id == id and not item.answered then
+			return item
+		end
+	end
+	return nil
+end
+
+function Career.answerOffer(plr, data)
+	local career = profiles[plr] and profiles[plr].career
+	if not career or matchActive and slotOfPlayer[plr] then
+		return
+	end
+	local item = Career.offerById(career, tonumber(data.id))
+	if not item then
+		return
+	end
+	item.answered = true
+	item.read = true
+	local offer = item.offer
+	if offer.expires < career.season * 100 + career.round then
+		Career.news(career, "Offer expired", Teams.list[offer.club].name .. " have moved on.", "news")
+	elseif data.accept then
+		local old = career.club
+		career.club = offer.club
+		career.contract = { years = offer.years, salary = offer.salary }
+		career.seasonsAtClub = 0
+		career.status = offer.status
+		item.result = "ACCEPTED"
+		Career.news(career, "Transfer complete: " .. Teams.list[offer.club].name, "You leave " .. Teams.list[old].name .. " and sign until the end of season " .. (career.season + offer.years - 1) .. ".", "transfer")
+		-- other offers lapse
+		for _, other in career.inbox do
+			if other.offer and not other.answered then
+				other.answered, other.result = true, "LAPSED"
+			end
+		end
+		Career.updateStatus(career, true)
+	else
+		item.result = "DECLINED"
+	end
+	sendProfile(plr)
+	task.spawn(saveProfile, plr)
+end
+
+-- extra training: costs career money (earned from your salary), never real money
+Career.CAMP_COST = 4000
+function Career.trainingCamp(plr)
+	local career = profiles[plr] and profiles[plr].career
+	if not career or career.money < Career.CAMP_COST then
+		return
+	end
+	career.money -= Career.CAMP_COST
+	local gains = Career.addProgress(career, career.focus, 70)
+	career.ovr = Career.careerOverall(career)
+	career.perks = Teams.perksFor(career.attrs)
+	Career.news(career, "Training camp", "A week of extra " .. Teams.ATTR_NAMES[career.focus] .. " work" .. (gains > 0 and (": +" .. gains .. " " .. career.focus .. "!") or "."), "training")
+	sendProfile(plr)
+end
+
+-- The season's end: champions, targets, awards, history, contract and offers
+function Career.endSeason(career, summary)
+	local order = standings(career.table)
+	local position = table.find(order, career.club) or #order
+	local champion = career.playoff and career.playoff.champion or order[1]
+	summary.champion = champion
+	summary.position = position
+	if champion == career.club then
+		career.trophies += 1
+		table.insert(career.awards, { season = career.season, name = "ARENA LEAGUE CHAMPION", club = career.club })
+		Career.news(career, "CHAMPIONS!", Teams.list[career.club].name .. " are the Arena League champions. Your name is on the trophy.", "trophy")
+	else
+		Career.news(career, Teams.list[champion].name .. " are champions", "Your club finished " .. position .. "th in the regular season.", "news")
+	end
+	-- the board's target
+	local met = (career.objectives.club.target == 1 and champion == career.club) or (career.objectives.club.target > 1 and position <= career.objectives.club.target)
+	career.morale = math.clamp(career.morale + (met and 12 or -12), 0, 100)
+	Career.news(career, met and "Board target met" or "Board target missed", career.objectives.club.text .. (met and ": the board are delighted." or ": the board expected more."), "objective")
+	-- awards
+	local s = career.season_stats
+	local avg = s.matches > 0 and s.ratings / s.matches or 0
+	if s.matches >= 6 and avg >= 7.8 then
+		table.insert(career.awards, { season = career.season, name = "PLAYER OF THE SEASON" })
+		Career.news(career, "Player of the Season!", string.format("An average rating of %.1f made you the best player in the league.", avg), "trophy")
+	elseif s.matches >= 6 and avg >= 7.1 then
+		table.insert(career.awards, { season = career.season, name = "TEAM OF THE SEASON" })
+		Career.news(career, "Team of the Season", string.format("Your %.1f average earned a place in the Team of the Season.", avg), "trophy")
+	end
+	table.insert(career.history, {
+		season = career.season,
+		club = career.club,
+		position = position,
+		champion = champion == career.club,
+		matches = s.matches,
+		wins = s.wins,
+		kills = s.kills,
+		aces = s.aces,
+		blocks = s.blocks,
+		digs = s.digs,
+		avg = math.floor(avg * 10 + 0.5) / 10,
+		ovr = career.ovr,
+	})
+	-- contract
+	career.contract.years -= 1
+	if career.contract.years <= 0 then
+		career.contract = { years = 2, salary = math.floor(career.contract.salary * (avg >= 7 and 1.25 or 1.05)) }
+		Career.news(career, "New contract", "You've signed a new 2-season deal at " .. career.contract.salary .. " a match.", "contract")
+	end
+	career.season += 1
+	career.seasonsAtClub += 1
+	Career.freshSeason(career)
+	summary.seasonOver = true
+	Career.makeOffers(career, rng:NextInteger(1, 3), "summer transfer window")
+	Career.news(career, "Season " .. career.season .. " begins", "The board's target: " .. career.objectives.club.text .. ". Yours: " .. career.objectives.personal[1].text .. " and " .. string.lower(career.objectives.personal[2].text) .. ".", "objective")
+end
+
+-- after the league: the top four play semi-finals (1 v 4, 2 v 3) and a final
+function Career.startPlayoffs(career, summary)
+	local order = standings(career.table)
+	local semis = { { order[1], order[4] }, { order[2], order[3] } }
+	career.playoff = { semis = semis, winners = {} }
+	local mine = nil
+	for i, pair in semis do
+		if pair[1] == career.club or pair[2] == career.club then
+			mine = i
+		else
+			local h, a = simulate(pair[1], pair[2])
+			career.playoff.winners[i] = h > a and pair[1] or pair[2]
+		end
+	end
+	if mine then
+		local pair = semis[mine]
+		career.phase = "semi"
+		career.playoffOpp = pair[1] == career.club and pair[2] or pair[1]
+		career.playoff.mine = mine
+		Career.news(career, "Playoffs!", "You finished in the top four. Semi-final (best of three) against " .. Teams.list[career.playoffOpp].name .. ".", "playoff")
+	else
+		local a, b = career.playoff.winners[1], career.playoff.winners[2]
+		local h, x = simulate(a, b)
+		career.playoff.champion = h > x and a or b
+		Career.endSeason(career, summary)
+	end
+end
+
+function Career.finishCareerMatch(plr, result, context)
 	local profile = profiles[plr]
 	local career = profile and profile.career
 	if not career then
 		return
 	end
+	Career.ensureCareer(career)
 	local st = result.stats
 	local opponent = context.away
 	local myScore, theirScore = teams[1].score, teams[2].score
-	local xp = 40 + (result.won and 30 or 0) + (st.kills or 0) * 10 + (st.aces or 0) * 15 + (st.blocks or 0) * 12 + (st.digs or 0) * 5
+	local setsLine = (setsToWin > 1) and (teams[1].sets .. "-" .. teams[2].sets .. " sets") or (myScore .. " - " .. theirScore)
+	local rating = Career.matchRating(st, result.won)
+
+	-- XP, levels and training points
+	local xp = 40 + (result.won and 30 or 0) + math.floor(rating * 8) + (st.kills or 0) * 8 + (st.aces or 0) * 12 + (st.blocks or 0) * 10 + (st.digs or 0) * 4
 	career.xp += xp
 	local levels = 0
 	while career.xp >= 100 * career.level do
@@ -2815,41 +3335,153 @@ local function finishCareerMatch(plr, result, context)
 		career.points += 3
 		levels += 1
 	end
-	career.stats.matches += 1
-	career.stats.wins += result.won and 1 or 0
-	for key, field in { kills = "kills", aces = "aces", blocks = "blocks", digs = "digs" } do
-		career.stats[key] += st[field] or 0
+	-- training focus
+	local before = career.attrs[career.focus]
+	local gains = Career.addProgress(career, career.focus, math.floor(10 + rating * 3))
+	-- form, morale and money
+	table.insert(career.form, rating)
+	while #career.form > 5 do
+		table.remove(career.form, 1)
 	end
-	-- this round: our match plus every other one
-	record(career.table, career.club, opponent, myScore, theirScore)
-	for _, pair in pairings(career.round) do
-		if pair[1] ~= career.club and pair[2] ~= career.club then
-			local h, a = simulate(pair[1], pair[2])
-			record(career.table, pair[1], pair[2], h, a)
+	career.morale = math.clamp(career.morale + (result.won and 4 or -4) + math.floor((rating - 6.5) * 2), 0, 100)
+	career.money += career.contract.salary + (result.won and math.floor(career.contract.salary * 0.5) or 0)
+	-- stats
+	for _, bucket in { career.stats, career.season_stats } do
+		bucket.matches += 1
+		bucket.wins += result.won and 1 or 0
+		bucket.kills += st.kills or 0
+		bucket.aces += st.aces or 0
+		bucket.blocks += st.blocks or 0
+		bucket.digs += st.digs or 0
+	end
+	career.season_stats.ratings += rating
+	-- personal targets
+	for _, o in career.objectives.personal do
+		if not o.done then
+			if o.stat == "good" then
+				o.progress += rating >= 7.5 and 1 or 0
+			elseif o.stat == "wins" then
+				o.progress += result.won and 1 or 0
+			else
+				o.progress += st[o.stat] or 0
+			end
+			if o.progress >= o.target then
+				o.done = true
+				career.xp += 150
+				Career.news(career, "Target reached: " .. o.text, "+150 XP. The fans love it.", "objective")
+			end
 		end
 	end
+	career.ovr = Career.careerOverall(career)
+	career.perks = Teams.perksFor(career.attrs)
+
 	local summary = {
 		opponent = opponent,
 		won = result.won,
-		score = myScore .. " - " .. theirScore,
+		score = setsLine,
 		xp = xp,
 		levels = levels,
 		round = career.round,
+		phase = career.phase,
+		rating = rating,
+		stats = { kills = st.kills or 0, aces = st.aces or 0, blocks = st.blocks or 0, digs = st.digs or 0 },
+		focus = career.focus,
+		focusGain = gains,
+		focusFrom = before,
+		money = career.contract.salary,
 	}
-	career.round += 1
-	if career.round > ROUNDS then
-		local order = standings(career.table)
-		summary.champion = order[1]
-		summary.position = table.find(order, career.club)
-		if order[1] == career.club then
-			career.trophies += 1
-		end
-		career.season += 1
-		career.round = 1
-		career.table = freshTable()
+	table.insert(career.results, { round = career.round, phase = career.phase, opponent = opponent, won = result.won, score = setsLine, rating = rating })
+	Career.news(career, (result.won and "Win" or "Defeat") .. " against " .. Teams.list[opponent].name, string.format("%s. Your rating: %.1f (%d kills, %d aces, %d blocks, %d digs).", setsLine, rating, st.kills or 0, st.aces or 0, st.blocks or 0, st.digs or 0), "match")
+	if rating >= 8.5 then
+		Career.news(career, "Player of the Match", string.format("A %.1f rating. The papers are full of you.", rating), "award")
 	end
+
+	if career.phase == "league" then
+		-- this round: our match plus every other one
+		record(career.table, career.club, opponent, myScore, theirScore)
+		for _, pair in pairings(career.round) do
+			if pair[1] ~= career.club and pair[2] ~= career.club then
+				local h, a = simulate(pair[1], pair[2])
+				record(career.table, pair[1], pair[2], h, a)
+			end
+		end
+		career.round += 1
+		if career.round == math.floor(ROUNDS / 2) + 1 then
+			Career.makeOffers(career, (Career.averageForm(career) >= 7 and 2 or 1), "mid-season transfer window")
+		end
+		if career.round > ROUNDS then
+			Career.startPlayoffs(career, summary)
+		end
+	elseif career.phase == "semi" then
+		local playoff = career.playoff
+		local other = playoff.mine == 1 and 2 or 1
+		if result.won then
+			playoff.winners[playoff.mine] = career.club
+			career.phase = "final"
+			career.playoffOpp = playoff.winners[other]
+			Career.news(career, "Into the final!", "The final (best of three) is against " .. Teams.list[career.playoffOpp].name .. ".", "playoff")
+		else
+			playoff.winners[playoff.mine] = opponent
+			local a, b = playoff.winners[1], playoff.winners[2]
+			local h, x = simulate(a, b)
+			playoff.champion = h > x and a or b
+			Career.endSeason(career, summary)
+		end
+	elseif career.phase == "final" then
+		career.playoff.champion = result.won and career.club or opponent
+		Career.endSeason(career, summary)
+	end
+	Career.updateStatus(career)
 	career.last = summary
 	remote:FireClient(plr, "career_result", summary)
+	sendProfile(plr)
+	task.spawn(saveProfile, plr)
+end
+
+ensureCareerLater = Career.ensureCareer
+for _, profile in profiles do
+	pcall(Career.ensureCareer, profile.career)
+end
+
+function Career.setFocus(plr, attr)
+	local career = profiles[plr] and profiles[plr].career
+	if career and table.find(Career.FOCUS_ATTRS, attr) then
+		career.focus = attr
+		sendProfile(plr)
+	end
+end
+
+function Career.markRead(plr)
+	local career = profiles[plr] and profiles[plr].career
+	if career then
+		for _, item in career.inbox do
+			item.read = true
+		end
+		sendProfile(plr)
+	end
+end
+
+-- Edit Player, kits and courts (saved with your profile)
+function Career.saveCustom(plr, data)
+	local profile = profiles[plr]
+	if not profile then
+		return
+	end
+	local custom = profile.custom or {}
+	custom.number = math.clamp(math.floor(tonumber(data.number) or custom.number or 7), 1, 99)
+	custom.role = table.find(Teams.ROLE_ORDER, data.role) and data.role or custom.role or "OH"
+	custom.wearKit = data.wearKit == true
+	custom.court = math.clamp(math.floor(tonumber(data.court) or custom.court or 1), 1, #Teams.COURTS)
+	custom.kits = custom.kits or {}
+	if type(data.kits) == "table" then
+		for id = 1, #Teams.list do
+			local k = tonumber(data.kits[tostring(id)])
+			if k then
+				custom.kits[tostring(id)] = math.clamp(math.floor(k), 1, 3)
+			end
+		end
+	end
+	profile.custom = custom
 	sendProfile(plr)
 	task.spawn(saveProfile, plr)
 end
@@ -2896,9 +3528,12 @@ local function tryOnlineMatch()
 		away = away,
 		plan = a.plan,
 		awayPlan = away == b.club and b.plan or nil,
+		kit = a.kit,
+		awayKit = b.kit,
+		court = a.court,
 		players = {
-			{ player = a.player, team = 1, slot = 2 },
-			{ player = b.player, team = 2, slot = 2 },
+			{ player = a.player, team = 1, slot = 2, custom = a.custom },
+			{ player = b.player, team = 2, slot = 2, custom = b.custom },
 		},
 	})
 end
@@ -2933,7 +3568,7 @@ function onMatchFinished(context, results, _winner)
 	for _, result in results do
 		if result.player.Parent then
 			if context.mode == "career" then
-				finishCareerMatch(result.player, result, context)
+				Career.finishCareerMatch(result.player, result, context)
 			elseif context.mode == "online" then
 				finishOnlineMatch(result.player, result)
 			end
@@ -2951,9 +3586,9 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 	if action == "profile" then
 		sendProfile(plr)
 	elseif action == "career_create" then
-		createCareer(plr, data)
+		Career.createCareer(plr, data)
 	elseif action == "career_train" then
-		trainCareer(plr, data.attr)
+		Career.trainCareer(plr, data.attr)
 	elseif action == "career_tactics" then
 		-- the team tactics you play with in your career
 		local career = profiles[plr] and profiles[plr].career
@@ -2961,6 +3596,16 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 			career.tactics = Teams.cleanPlan(career.club, { tactics = data.tactics }).tactics
 			sendProfile(plr)
 		end
+	elseif action == "career_focus" then
+		Career.setFocus(plr, data.attr)
+	elseif action == "career_offer" then
+		Career.answerOffer(plr, data)
+	elseif action == "career_camp" then
+		Career.trainingCamp(plr)
+	elseif action == "career_read" then
+		Career.markRead(plr)
+	elseif action == "custom_save" then
+		Career.saveCustom(plr, data)
 	elseif action == "career_save" then
 		task.spawn(saveProfile, plr)
 	elseif action == "career_retire" then
@@ -2971,12 +3616,21 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 	elseif action == "start" and data.mode == "career" then
 		if not controllers[plr] then
-			startCareerMatch(plr)
+			Career.startCareerMatch(plr)
 		end
 	elseif action == "start" and data.mode == "online" then
 		if not controllers[plr] then
 			leaveQueue(plr)
-			table.insert(queue, { player = plr, club = math.clamp(math.floor(tonumber(data.club) or 1), 1, #Teams.list), plan = type(data.plan) == "table" and data.plan or nil })
+			local club = math.clamp(math.floor(tonumber(data.club) or 1), 1, #Teams.list)
+			local custom = profiles[plr] and profiles[plr].custom or {}
+			table.insert(queue, {
+				player = plr,
+				club = club,
+				plan = type(data.plan) == "table" and data.plan or nil,
+				kit = custom.kits and custom.kits[tostring(club)] or 1,
+				court = custom.court,
+				custom = { number = custom.number or 7, wearKit = custom.wearKit == true },
+			})
 			tryOnlineMatch()
 		end
 	elseif action == "online_cancel" then
@@ -3341,6 +3995,67 @@ function Teams.cleanPlan(id, plan)
 				end
 			end
 			out[r.key] = best
+		end
+	end
+	return out
+end
+
+---------------------------------------------------------------- kits, courts and perks
+
+-- Three kits per club: home, away (colours swapped) and a darker third kit
+function Teams.kits(id)
+	local d = Teams.list[id]
+	local p = d.primary
+	return {
+		{ name = "HOME", shirt = d.primary, shorts = d.secondary },
+		{ name = "AWAY", shirt = d.secondary, shorts = d.primary },
+		{ name = "THIRD", shirt = Color3.new(p.R * 0.35, p.G * 0.35, p.B * 0.35), shorts = Color3.new(math.min(p.R * 1.2, 1), math.min(p.G * 1.2, 1), math.min(p.B * 1.2, 1)) },
+	}
+end
+
+-- how alike two colours are (0 = the same)
+function Teams.colorGap(a, b)
+	return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B)
+end
+
+-- The away side's kit: the one picked, unless it clashes with the home shirt
+function Teams.awayKit(homeId, homeKit, awayId, want)
+	local homeShirt = Teams.kits(homeId)[homeKit or 1].shirt
+	local kits = Teams.kits(awayId)
+	local order = { want or 1, 1, 2, 3 }
+	for _, k in order do
+		if kits[k] and Teams.colorGap(kits[k].shirt, homeShirt) > 0.45 then
+			return k
+		end
+	end
+	return 3
+end
+
+-- Court looks: free zone, court, lines and floor material
+Teams.COURTS = {
+	{ name = "CLASSIC", free = Color3.fromRGB(34, 74, 128), court = Color3.fromRGB(214, 128, 62), lines = Color3.fromRGB(245, 245, 245), material = "SmoothPlastic" },
+	{ name = "PRO BLUE", free = Color3.fromRGB(22, 40, 92), court = Color3.fromRGB(52, 110, 200), lines = Color3.fromRGB(250, 250, 250), material = "SmoothPlastic" },
+	{ name = "HARDWOOD", free = Color3.fromRGB(150, 98, 58), court = Color3.fromRGB(214, 170, 112), lines = Color3.fromRGB(255, 255, 255), material = "WoodPlanks" },
+	{ name = "EMERALD", free = Color3.fromRGB(30, 70, 50), court = Color3.fromRGB(64, 150, 96), lines = Color3.fromRGB(240, 250, 240), material = "SmoothPlastic" },
+	{ name = "NIGHT", free = Color3.fromRGB(14, 12, 30), court = Color3.fromRGB(40, 30, 90), lines = Color3.fromRGB(94, 242, 224), material = "Glass" },
+}
+
+-- Career perks: unlocked when an attribute reaches 80
+Teams.PERKS = {
+	{ attr = "SRV", name = "CANNON", info = "Your serves travel faster" },
+	{ attr = "ATK", name = "HAMMER", info = "Your spikes are harder" },
+	{ attr = "BLK", name = "WALL", info = "Your block covers more of the net" },
+	{ attr = "REC", name = "MAGNET", info = "Cleaner passes from hard hits" },
+	{ attr = "SET", name = "MAESTRO", info = "More accurate sets" },
+	{ attr = "PHY", name = "SKY HIGH", info = "More reach for every touch" },
+}
+Teams.PERK_LEVEL = 80
+
+function Teams.perksFor(attrs)
+	local out = {}
+	for _, perk in Teams.PERKS do
+		if (attrs[perk.attr] or 0) >= Teams.PERK_LEVEL then
+			out[perk.name] = true
 		end
 	end
 	return out
@@ -4730,6 +5445,7 @@ end
 
 local Controls = { charging = false, chargeStart = 0, lastSend = 0, lastDive = 0, diveUntil = 0, pending = nil }
 local showPause -- the pause screen, defined with the menus
+local Cam -- the cameras, defined further down
 
 local function chargePower()
 	return math.clamp((os.clock() - Controls.chargeStart) / 1.2, 0, 1)
@@ -4929,7 +5645,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 	local key = input.KeyCode
-	if key == Enum.KeyCode.M or key == Enum.KeyCode.ButtonStart then
+	if key == Enum.KeyCode.G or key == Enum.KeyCode.ButtonSelect then
+		Cam.toggleFree()
+	elseif Cam.free then
+		return -- the free camera has the keys
+	elseif key == Enum.KeyCode.M or key == Enum.KeyCode.ButtonStart then
 		if showPause then
 			showPause()
 		end
@@ -4965,7 +5685,82 @@ HUD.diveButton.MouseButton1Down:Connect(dive)
 -- BROADCAST: a low chase camera behind your team that follows the play.
 -- BEHIND PLAYER (V): Roblox's own camera on your character, with shift lock.
 
-local Cam = { focus = nil, zoom = 1, ready = false, shakeUntil = 0, shakePower = 0, mode = nil }
+Cam = { focus = nil, zoom = 1, ready = false, shakeUntil = 0, shakePower = 0, mode = nil, free = false, yaw = 0, pitch = -0.3, look = Vector2.zero, freePos = nil }
+
+-- FREE CAM (G): fly the camera anywhere. W A S D move, Q / E down and up, hold the right
+-- mouse button (or use the right stick) to look, Shift to go faster. Your player stands still.
+local function setCharacterControls(enabled)
+	pcall(function()
+		local module = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
+		local controls = module:GetControls()
+		if enabled then
+			controls:Enable()
+		else
+			controls:Disable()
+		end
+	end)
+end
+
+function Cam.toggleFree()
+	if inMenu then
+		return
+	end
+	Cam.free = not Cam.free
+	if Cam.free then
+		local cf = workspace.CurrentCamera.CFrame
+		Cam.freePos = cf.Position
+		local look = cf.LookVector
+		Cam.yaw = math.atan2(-look.X, -look.Z)
+		Cam.pitch = math.asin(math.clamp(look.Y, -1, 1))
+		HUD.flash("FREE CAM  ·  G TO RETURN", COL.teal)
+	else
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		Cam.mode = nil
+	end
+	task.spawn(setCharacterControls, not Cam.free and not state.paused)
+end
+
+UserInputService.InputChanged:Connect(function(input)
+	if not Cam.free then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseMovement and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+		Cam.yaw -= input.Delta.X * 0.004
+		Cam.pitch = math.clamp(Cam.pitch - input.Delta.Y * 0.004, -1.45, 1.45)
+	elseif input.KeyCode == Enum.KeyCode.Thumbstick2 then
+		Cam.look = Vector2.new(input.Position.X, input.Position.Y)
+	elseif input.KeyCode == Enum.KeyCode.Thumbstick1 then
+		Cam.stick = Vector2.new(input.Position.X, input.Position.Y)
+	end
+end)
+
+local function updateFree(dt)
+	local cam = workspace.CurrentCamera
+	cam.CameraType = Enum.CameraType.Scriptable
+	UserInputService.MouseBehavior = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) and Enum.MouseBehavior.LockCurrentPosition or Enum.MouseBehavior.Default
+	if Cam.look.Magnitude > 0.15 then
+		Cam.yaw -= Cam.look.X * dt * 2.2
+		Cam.pitch = math.clamp(Cam.pitch + Cam.look.Y * dt * 1.6, -1.45, 1.45)
+	end
+	local rot = CFrame.Angles(0, Cam.yaw, 0) * CFrame.Angles(Cam.pitch, 0, 0)
+	local move = Vector3.zero
+	local function down(k)
+		return UserInputService:IsKeyDown(k)
+	end
+	if down(Enum.KeyCode.W) then move += Vector3.new(0, 0, -1) end
+	if down(Enum.KeyCode.S) then move += Vector3.new(0, 0, 1) end
+	if down(Enum.KeyCode.A) then move += Vector3.new(-1, 0, 0) end
+	if down(Enum.KeyCode.D) then move += Vector3.new(1, 0, 0) end
+	if down(Enum.KeyCode.E) or down(Enum.KeyCode.ButtonR1) then move += Vector3.new(0, 1, 0) end
+	if down(Enum.KeyCode.Q) or down(Enum.KeyCode.ButtonL1) then move += Vector3.new(0, -1, 0) end
+	if Cam.stick and Cam.stick.Magnitude > 0.15 then
+		move += Vector3.new(Cam.stick.X, 0, -Cam.stick.Y)
+	end
+	local speed = (down(Enum.KeyCode.LeftShift) and 70 or 26) * dt
+	Cam.freePos += rot:VectorToWorldSpace(move) * speed
+	cam.FieldOfView = 70
+	cam.CFrame = CFrame.new(Cam.freePos) * rot
+end
 
 function Cam.shake(power, seconds)
 	Cam.shakePower = math.max(Cam.shakePower, power)
@@ -4982,7 +5777,12 @@ UserInputService.InputChanged:Connect(function(input, processed)
 end)
 
 function Cam.update(dt, ballPos)
+	if Cam.free and not inMenu then
+		updateFree(dt)
+		return
+	end
 	if inMenu then
+		Cam.free = false
 		Cam.mode = nil
 		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 		return
@@ -5056,6 +5856,7 @@ local function updatePrompts()
 	else
 		HUD.setPrompts({
 			{ pad and "START" or "M", "Pause" },
+			{ pad and "BACK" or "G", "Free cam" },
 			{ "V", settings.camera == "player" and "Broadcast camera" or "Behind-player camera" },
 			settings.camera == "player" and { "SHIFT", "Shift lock" } or nil,
 		})
@@ -5078,11 +5879,15 @@ local sel = {
 sel.lineup = sel.plan.lineup
 local history = {} -- results this session: { home, away, winner, score }
 
+-- your Edit Player, kit and court choices (saved with your profile)
+Menu.custom = { number = 7, role = "OH", wearKit = false, court = 1, kits = {} }
+
 -- a fresh game plan when you pick another club
 local function resetPlan()
 	sel.plan = Teams.cleanPlan(sel.home, nil)
 	sel.lineup = sel.plan.lineup
 	sel.slot = 2
+	sel.slotPicked = false
 end
 
 Menu.gui = make("ScreenGui", {
@@ -5401,8 +6206,9 @@ function Menu.avatar(parent, props, yaw)
 	vp.CurrentCamera = cam
 	local holder = { vp = vp }
 
-	-- source: "me" for your own character, or { team = id, number = n, ball = bool }
-	function holder.set(source)
+	-- source: "me" for your own character, or { team = id, number = n, ball = bool };
+	-- pose "cheer" throws the arms up like a cover star
+	function holder.set(source, pose)
 		holder.source = source
 		worldModel:ClearAllChildren()
 		local model
@@ -5427,6 +6233,17 @@ function Menu.avatar(parent, props, yaw)
 			return
 		end
 		local hum = prepareModel(model)
+		if pose == "cheer" then
+			local angles = { RightShoulder = { 150, 0, 38 }, LeftShoulder = { 150, 0, -38 }, RightElbow = { 25, 0, 0 }, LeftElbow = { 25, 0, 0 }, Waist = { -10, 0, 0 } }
+			for joint, a in angles do
+				local partName = ({ RightShoulder = "RightUpperArm", LeftShoulder = "LeftUpperArm", RightElbow = "RightLowerArm", LeftElbow = "LeftLowerArm", Waist = "UpperTorso" })[joint]
+				local part = model:FindFirstChild(partName)
+				local motor = part and part:FindFirstChild(joint)
+				if motor and motor:IsA("Motor6D") then
+					motor.C0 = motor.C0 * CFrame.Angles(math.rad(a[1]), math.rad(a[2]), math.rad(a[3]))
+				end
+			end
+		end
 		model:PivotTo(CFrame.Angles(0, math.pi + (yaw or 0.3), 0))
 		model.Parent = worldModel
 		if source ~= "me" and source.ball then
@@ -5436,7 +6253,7 @@ function Menu.avatar(parent, props, yaw)
 		local h = math.max(size.Y, 4)
 		local dist = (h * 0.56) / math.tan(math.rad(cam.FieldOfView / 2))
 		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, h * 0.04, dist), cf.Position + Vector3.new(0, h * 0.04, 0))
-		if hum then
+		if hum and pose ~= "cheer" then
 			local animator = hum:FindFirstChildOfClass("Animator") or make("Animator", {}, hum)
 			local anim = make("Animation", { AnimationId = shared:GetAttribute("PackIdle") or "rbxassetid://507766666" })
 			local ok, track = pcall(animator.LoadAnimation, animator, anim)
@@ -5451,15 +6268,9 @@ end
 
 ---------------------------------------------------------------- shared front-screen pieces
 
--- the ARENA VOLLEYBALL mark, bottom right
-do
-	local logo = frame({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.fromOffset(1240, 692), Size = UDim2.fromOffset(268, 42), BackgroundTransparency = 1 }, board)
-	local roundel = frame({ Size = UDim2.fromOffset(42, 42), BackgroundTransparency = 1 }, logo)
-	round(roundel, 21)
-	make("UIStroke", { Color = COL.text, Thickness = 2 }, roundel)
-	text({ Size = UDim2.fromScale(1, 1), Text = "AV", FontFace = FONT.title, TextSize = 17 }, roundel)
-	text({ Position = UDim2.fromOffset(50, 0), Size = UDim2.fromOffset(218, 42), Text = "ARENA VOLLEYBALL", FontFace = FONT.title, TextSize = 25, TextXAlignment = Enum.TextXAlignment.Left }, logo)
-end
+-- the ARENA VOLLEYBALL wordmark, bottom right
+local WORDMARK = Font.new("rbxasset://fonts/families/RobotoCondensed.json", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
+Menu.logo = text({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.fromOffset(1240, 692), Size = UDim2.fromOffset(320, 42), Text = "ARENA VOLLEYBALL", FontFace = WORDMARK, TextSize = 30, TextXAlignment = Enum.TextXAlignment.Right }, board)
 
 -- you, standing on the left like a cover star
 Menu.cover = Menu.avatar(board, { Position = UDim2.fromOffset(-30, 40), Size = UDim2.fromOffset(340, 680), Visible = false }, 0.35)
@@ -5470,6 +6281,75 @@ end
 player.CharacterAppearanceLoaded:Connect(refreshCover)
 if player.Character then
 	task.spawn(refreshCover)
+end
+
+---------------------------------------------------------------- the title screen (shown while the game loads)
+
+do
+	local ts = Menu.screen("title")
+	Menu.titleArt = Menu.avatar(ts, { Position = UDim2.fromOffset(-40, 0), Size = UDim2.fromOffset(660, 720) }, 0.55)
+	local mark = frame({ Position = UDim2.fromOffset(600, 120), Size = UDim2.fromOffset(640, 230), BackgroundTransparency = 1 }, ts)
+	text({ Size = UDim2.new(1, 0, 0, 60), Text = "ARENA", FontFace = WORDMARK, TextSize = 64, TextColor3 = COL.teal }, mark)
+	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 120), Text = "VOLLEYBALL", FontFace = WORDMARK, TextSize = 118, TextColor3 = COL.teal }, mark)
+	Menu.titlePrompt = frame({ Position = UDim2.fromOffset(600, 352), Size = UDim2.fromOffset(640, 30), BackgroundTransparency = 1 }, ts)
+	local key = frame({ AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(0.5, -48, 0.5, 0), Size = UDim2.fromOffset(22, 22), BackgroundColor3 = COL.teal }, Menu.titlePrompt)
+	round(key, 11)
+	text({ Size = UDim2.fromScale(1, 1), Text = "A", FontFace = FONT.title, TextSize = 13, TextColor3 = COL.ink }, key)
+	Menu.titlePromptText = text({ AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.5, -40, 0.5, 0), Size = UDim2.fromOffset(200, 30), Text = "PRESS ANY BUTTON", FontFace = FONT.head, TextSize = 22, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, Menu.titlePrompt)
+	Menu.titleKey = key
+	text({
+		Position = UDim2.fromOffset(600, 450),
+		Size = UDim2.fromOffset(640, 70),
+		Text = "ARENA VOLLEYBALL   ·   SEASON 1\nThis game saves your progress automatically. Please don't leave\nwhile the saving icon is showing.",
+		FontFace = FONT.head,
+		TextSize = 14,
+		LineHeight = 1.15,
+	}, ts)
+	-- the spinning loading / saving icon
+	Menu.titleSpinner = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(920, 630), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1 }, ts)
+	round(Menu.titleSpinner, 15)
+	make("UIStroke", { Color = COL.text, Thickness = 2 }, Menu.titleSpinner)
+	frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 10, 0, 2), BackgroundColor3 = COL.text }, Menu.titleSpinner)
+	Menu.titleLoaded = false
+	Menu.onShow.title = function()
+		Menu.logo.Visible = false
+		task.spawn(function()
+			task.wait(0.6)
+			Menu.titleArt.set("me", "cheer")
+		end)
+	end
+	-- loading: wait for the game's pieces (and your profile, briefly), then ask for a button
+	task.spawn(function()
+		shared:WaitForChild("MenuModel", 10)
+		local started = os.clock()
+		while not Menu.profileLoaded and os.clock() - started < 4 do
+			task.wait(0.1)
+		end
+		task.wait(0.8)
+		Menu.titleLoaded = true
+	end)
+	RunService.RenderStepped:Connect(function(dt)
+		if Menu.current ~= "title" or not Menu.gui.Enabled then
+			return
+		end
+		Menu.titleSpinner.Rotation = (Menu.titleSpinner.Rotation + dt * 240) % 360
+		local blink = Menu.titleLoaded and (0.5 + 0.5 * math.sin(os.clock() * 4)) or 0.85
+		Menu.titlePromptText.TextTransparency = 1 - blink
+		Menu.titleKey.BackgroundTransparency = 1 - blink
+		Menu.titlePromptText.Text = Menu.titleLoaded and "PRESS ANY BUTTON" or "LOADING"
+	end)
+	local function leave(input)
+		if Menu.current ~= "title" or not Menu.titleLoaded then
+			return
+		end
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseMovement or kind == Enum.UserInputType.MouseWheel or input.KeyCode == Enum.KeyCode.Thumbstick1 or input.KeyCode == Enum.KeyCode.Thumbstick2 then
+			return
+		end
+		Menu.logo.Visible = true
+		Menu.show("home", false)
+	end
+	UserInputService.InputBegan:Connect(leave)
 end
 
 local function firstWord(name)
@@ -5652,14 +6532,20 @@ do
 
 	for i, info in {
 		{ "online", "ONLINE SEASONS", "Ranked 6v6 against other players. Win matches to climb ten divisions.", "CO-OP SEASONS", "Team up with a friend against other duos." },
-		{ "customise", "EDIT PLAYER", "Change your player's name, number and kit.", "KITS AND COURTS", "Choose home and away kits and the arena you play in." },
+		{ "customise", "EDIT PLAYER", "Your shirt number, your preferred position, and whether you wear the team kit.", "KITS AND COURTS", "Home, away and third kits for every club, and five court styles." },
 	} do
 		local page = Menu.screen(info[1])
 		Menu.frontTabs(page, i + 2)
 		for k = 0, 1 do
-			local live = info[1] == "online" and k == 0
+			local live = info[1] == "customise" or k == 0
 			local t = Menu.tile(page, UDim2.fromOffset(268 + k * 476, 202), UDim2.fromOffset(468, 398), function()
-				if live then
+				if info[1] == "customise" then
+					if k == 0 then
+						Menu.openEditPlayer()
+					else
+						Menu.openKits()
+					end
+				elseif live then
 					Menu.openOnline()
 				else
 					Menu.toast("Coming soon")
@@ -5668,7 +6554,7 @@ do
 			Menu.title(t, info[2 + k * 2], 36)
 			text({ Position = UDim2.fromOffset(16, 64), Size = UDim2.fromOffset(430, 60), Text = info[3 + k * 2], FontFace = FONT.head, TextSize = 17, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, t)
 			if live then
-				Menu.chip(t, "PLAY NOW", UDim2.new(0, 16, 1, -40))
+				Menu.chip(t, info[1] == "customise" and "OPEN" or "PLAY NOW", UDim2.new(0, 16, 1, -40))
 			else
 				Menu.chip(t, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
 			end
@@ -6021,6 +6907,7 @@ function Menu.playAs()
 		Menu.toast("Put him in the starting six first")
 	elseif editable or state.active then
 		sel.slot = slot
+		sel.slotPicked = true
 		local p = Teams.squad(teamId)[Menu.squadSel]
 		Menu.toast("You'll play as " .. p.last .. " (" .. Teams.ROLES[p.role] .. ")")
 	end
@@ -6532,6 +7419,7 @@ do
 		{ "Ability  /  call quick set", "R  /  F", "Y  /  UP", "POWER" },
 		{ "Serve: hold, let go in the green", "HOLD CLICK", "HOLD R2", "HOLD HIT" },
 		{ "Camera  /  shift lock", "V  /  SHIFT", "", "" },
+		{ "Free cam (fly with W A S D, Q / E)", "G", "BACK", "" },
 		{ "Pause", "M", "START", "" },
 	}
 	for k, title in { "KEYBOARD", "GAMEPAD", "TOUCH" } do
@@ -6607,7 +7495,20 @@ function Menu.startMatch()
 	end
 	Menu.waiting = true
 	Menu.loading.Visible = true
+	-- unless you picked someone with P, you play your preferred position
+	if not sel.slotPicked and not state.active then
+		local squad = Teams.squad(sel.home)
+		for slot, index in sel.plan.lineup do
+			if squad[index].role == Menu.custom.role then
+				sel.slot = slot
+				break
+			end
+		end
+	end
 	remote:FireServer("start", {
+		kit = Menu.custom.kits[tostring(sel.home)] or 1,
+		court = Menu.custom.court,
+		custom = { number = Menu.custom.number, wearKit = Menu.custom.wearKit },
 		home = sel.home,
 		away = sel.away,
 		plan = sel.plan,
@@ -6754,7 +7655,7 @@ end
 -- pause screen: stops the match for everyone in it
 do
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, matchLayer)
-	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 490), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
+	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 554), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSED", FontFace = FONT.title, TextSize = 32, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
 	Menu.pauseBy = text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
@@ -6771,6 +7672,9 @@ do
 		end },
 		{ "CAMERA AND DISPLAY", function()
 			Menu.openMatchSettings()
+		end },
+		{ "FREE CAM", function()
+			Cam.toggleFree()
 		end },
 		{ "QUIT TO MAIN MENU", function()
 			remote:FireServer("pause", { on = false })
@@ -6795,7 +7699,7 @@ end
 local wasPaused = false
 function Menu.syncPause()
 	local show = state.paused == true and not inMenu and myTeam() ~= 0
-	Menu.pause.Visible = show
+	Menu.pause.Visible = show and not Cam.free
 	if not show then
 		Menu.subsShade.Visible = false
 		Menu.tacticsShade.Visible = false
@@ -7127,6 +8031,8 @@ RunService.RenderStepped:Connect(function(dt)
 	if not inMenu then
 		updatePrompts()
 		HUD.update(t, pos)
+		-- the pause screen steps aside while you fly the free camera
+		Menu.pause.Visible = state.paused == true and myTeam() ~= 0 and not Cam.free
 	end
 end)
 
@@ -7137,7 +8043,7 @@ end)
 
 ---------------------------------------------------------------- start in the main menu
 
-openMenu("home")
+openMenu("title")
 remote:FireServer("sync")
 
 ---------------------------------------------------------------- career and online screens
@@ -7281,19 +8187,73 @@ Menu.onShow.career_new = Menu.refreshCareerNew
 
 ---------------------------------------------------------------- the career hub
 
+local CAREER_TABS = { "OVERVIEW", "TRAINING", "LEAGUE", "INBOX", "HISTORY" }
+local CAMP_COST = 4000
+local KIND_COLORS = { offer = COL.gold, trophy = COL.gold, award = COL.gold, transfer = COL.teal, match = COL.cyan, objective = COL.lime, status = COL.pink, playoff = COL.coral }
+Menu.careerTab = 1
+
+-- colour for a 0-10 match rating
+local function rateColor(r)
+	if r >= 8 then
+		return COL.win
+	elseif r >= 7 then
+		return Color3.fromRGB(170, 220, 70)
+	elseif r >= 6 then
+		return COL.gold
+	end
+	return COL.coral
+end
+
+local function phaseLabel(career)
+	if career.phase == "semi" then
+		return "PLAYOFF SEMI-FINAL   ·   BEST OF THREE"
+	elseif career.phase == "final" then
+		return "PLAYOFF FINAL   ·   BEST OF THREE"
+	end
+	return "ROUND " .. career.round .. " OF " .. ROUNDS
+end
+
+local function nextOpponent(career)
+	if career.phase == "semi" or career.phase == "final" then
+		return career.playoffOpp or opponentFor(career.club, 1)
+	end
+	return opponentFor(career.club, career.round)
+end
+
+local function unread(career)
+	local n = 0
+	for _, item in career.inbox or {} do
+		if not item.read then
+			n += 1
+		end
+	end
+	return n
+end
+
+local function label(parent, props)
+	props.FontFace = props.FontFace or FONT.head
+	props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+	return text(props, parent)
+end
+
+local function bar(parent, x, y, w, h, fraction, color)
+	local back = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.bg2 }, parent)
+	frame({ Size = UDim2.fromScale(math.clamp(fraction, 0, 1), 1), BackgroundColor3 = color }, back)
+	return back
+end
+
 do
 	local screenFrame = Menu.screen("career")
 	Menu.chSub = header(screenFrame, "CAREER", "")
-	Menu.chCard = panel(screenFrame, 72, 110, 372, 510)
-	Menu.chNext = panel(screenFrame, 456, 110, 372, 510)
-	Menu.chTable = panel(screenFrame, 840, 110, 372, 510)
-	Menu.chSaving = text({ Position = UDim2.fromOffset(456, 630), Size = UDim2.fromOffset(760, 20), FontFace = FONT.head, TextSize = 14, TextColor3 = COL.coral, TextXAlignment = Enum.TextXAlignment.Right }, screenFrame)
+	Menu.chTabs = frame({ Position = UDim2.fromOffset(72, 104), Size = UDim2.fromOffset(760, 32), BackgroundTransparency = 1 }, screenFrame)
+	Menu.chBody = frame({ Position = UDim2.fromOffset(72, 146), Size = UDim2.fromOffset(1136, 476), BackgroundTransparency = 1 }, screenFrame)
+	Menu.chSaving = text({ Position = UDim2.fromOffset(600, 640), Size = UDim2.fromOffset(608, 20), FontFace = FONT.head, TextSize = 14, TextColor3 = COL.coral, TextXAlignment = Enum.TextXAlignment.Right }, screenFrame)
 	Menu.hints(screenFrame, {
 		{ "BACK", "Back", Menu.back },
 		{ "R", "Retire (press twice)", function()
 			Menu.retire()
 		end },
-	}, UDim2.fromOffset(72, 630))
+	}, UDim2.fromOffset(72, 636))
 end
 
 function Menu.retire()
@@ -7313,120 +8273,432 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 end)
 
+local function playCareerMatch()
+	if Menu.waiting then
+		return
+	end
+	Menu.waiting = true
+	Menu.loading.Visible = true
+	remote:FireServer("start", { mode = "career" })
+	task.delay(15, function()
+		if Menu.waiting and inMenu then
+			Menu.waiting = false
+			Menu.loading.Visible = false
+		end
+	end)
+end
+
+---------------------------------------------------------------- OVERVIEW
+
+local function overviewTab(body, career)
+	local def = Teams.list[career.club]
+	-- your player
+	local c = panel(body, 0, 0, 360, 476)
+	shirt(c, def.primary, career.number, 70, UDim2.fromOffset(60, 58))
+	label(c, { Position = UDim2.fromOffset(110, 16), Size = UDim2.fromOffset(160, 26), Text = career.role, FontFace = FONT.num, TextSize = 24, TextColor3 = COL.cyan })
+	label(c, { Position = UDim2.fromOffset(110, 42), Size = UDim2.fromOffset(170, 22), Text = string.upper(player.DisplayName), FontFace = FONT.title, TextSize = 19 })
+	label(c, { Position = UDim2.fromOffset(110, 64), Size = UDim2.fromOffset(170, 20), Text = def.name, TextSize = 15, TextColor3 = COL.dim })
+	local ovrBox = frame({ Position = UDim2.fromOffset(282, 14), Size = UDim2.fromOffset(62, 58), BackgroundColor3 = ratingColor(career.ovr) }, c)
+	text({ Position = UDim2.fromOffset(0, 2), Size = UDim2.new(1, 0, 0, 36), Text = tostring(career.ovr), FontFace = FONT.num, TextSize = 32, TextColor3 = COL.ink }, ovrBox)
+	text({ Position = UDim2.fromOffset(0, 38), Size = UDim2.new(1, 0, 0, 14), Text = "OVR", FontFace = FONT.title, TextSize = 12, TextColor3 = COL.ink }, ovrBox)
+	Menu.chip(c, career.status or "STARTER", UDim2.fromOffset(110, 90), COL.teal)
+
+	local need = 100 * career.level
+	label(c, { Position = UDim2.fromOffset(20, 128), Size = UDim2.fromOffset(160, 20), Text = "LEVEL " .. career.level, FontFace = FONT.title, TextSize = 16 })
+	label(c, { Position = UDim2.fromOffset(160, 128), Size = UDim2.fromOffset(180, 20), Text = career.xp .. " / " .. need .. " XP", TextSize = 14, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Right })
+	bar(c, 20, 152, 320, 8, career.xp / need, COL.teal)
+	label(c, { Position = UDim2.fromOffset(20, 170), Size = UDim2.fromOffset(160, 20), Text = "MORALE", FontFace = FONT.title, TextSize = 16 })
+	label(c, { Position = UDim2.fromOffset(160, 170), Size = UDim2.fromOffset(180, 20), Text = career.morale >= 75 and "BUZZING" or career.morale >= 50 and "CONTENT" or career.morale >= 30 and "LOW" or "UNHAPPY", TextSize = 14, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Right })
+	bar(c, 20, 194, 320, 8, career.morale / 100, career.morale >= 50 and COL.win or COL.coral)
+
+	label(c, { Position = UDim2.fromOffset(20, 214), Size = UDim2.fromOffset(200, 20), Text = "FORM (LAST 5)", FontFace = FONT.title, TextSize = 16 })
+	for i = 1, 5 do
+		local r = career.form[i]
+		local box = frame({ Position = UDim2.fromOffset(20 + (i - 1) * 66, 240), Size = UDim2.fromOffset(58, 36), BackgroundColor3 = r and rateColor(r) or COL.bg2, BackgroundTransparency = r and 0 or 0.4 }, c)
+		text({ Size = UDim2.fromScale(1, 1), Text = r and string.format("%.1f", r) or "-", FontFace = FONT.num, TextSize = 19, TextColor3 = r and COL.ink or COL.dim }, box)
+	end
+
+	label(c, { Position = UDim2.fromOffset(20, 294), Size = UDim2.fromOffset(320, 20), Text = "CONTRACT", FontFace = FONT.title, TextSize = 16 })
+	label(c, { Position = UDim2.fromOffset(20, 316), Size = UDim2.fromOffset(320, 40), Text = string.format("%d a match   ·   %d season%s left\nBank: %d", career.contract.salary, career.contract.years, career.contract.years == 1 and "" or "s", career.money), TextSize = 15, TextColor3 = COL.dim, TextYAlignment = Enum.TextYAlignment.Top })
+
+	label(c, { Position = UDim2.fromOffset(20, 368), Size = UDim2.fromOffset(320, 20), Text = "PERKS", FontFace = FONT.title, TextSize = 16 })
+	local px, py = 20, 394
+	local any = false
+	for _, perk in Teams.PERKS do
+		if career.perks and career.perks[perk.name] then
+			any = true
+			local chip = Menu.chip(c, perk.name, UDim2.fromOffset(px, py), COL.gold)
+			px += #perk.name * 9 + 34
+			if px > 280 then
+				px, py = 20, py + 30
+			end
+			chip.ZIndex = 2
+		end
+	end
+	if not any then
+		label(c, { Position = UDim2.fromOffset(20, 392), Size = UDim2.fromOffset(320, 40), Text = "Reach " .. Teams.PERK_LEVEL .. " in any attribute to unlock a perk.", TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+	end
+
+	-- next match
+	local n = panel(body, 372, 0, 380, 476)
+	Menu.title(n, career.phase == "league" and "NEXT MATCH" or "PLAYOFFS", 30)
+	text({ Position = UDim2.fromOffset(0, 54), Size = UDim2.new(1, 0, 0, 20), Text = phaseLabel(career), FontFace = FONT.head, TextSize = 15 }, n)
+	local opp = nextOpponent(career)
+	local order = standings(career.table)
+	for i, id in { career.club, opp } do
+		local cx = i == 1 and 100 or 280
+		local row = career.table[id]
+		badge(n, id, 88, UDim2.fromOffset(cx, 88), Vector2.new(0.5, 0))
+		text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(cx, 184), Size = UDim2.fromOffset(170, 20), Text = Teams.list[id].name, FontFace = FONT.title, TextSize = 15 }, n)
+		starRow(n, Teams.stars(Teams.ratings(id).OVR), 16, UDim2.fromOffset(cx, 208), Vector2.new(0.5, 0))
+		text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(cx, 228), Size = UDim2.fromOffset(170, 18), Text = ordinal(table.find(order, id) or 12) .. "   ·   " .. row.w .. "W " .. row.l .. "L", FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim }, n)
+	end
+	text({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(190, 132), Size = UDim2.fromOffset(60, 40), Text = "V", FontFace = FONT.num, TextSize = 34, TextColor3 = COL.dim }, n)
+	bigButton(n, "PLAY MATCH  ▸", UDim2.fromOffset(44, 264), UDim2.fromOffset(292, 54), playCareerMatch)
+	local last = career.last
+	if last then
+		local line = string.format("LAST: %s %s v %s", last.won and "WON" or "LOST", last.score, Teams.list[last.opponent].short)
+		text({ Position = UDim2.fromOffset(20, 336), Size = UDim2.fromOffset(340, 22), Text = line, FontFace = FONT.title, TextSize = 16, TextColor3 = last.won and COL.win or COL.coral }, n)
+		if last.rating then
+			text({ Position = UDim2.fromOffset(20, 360), Size = UDim2.fromOffset(340, 20), Text = string.format("RATING %.1f   ·   +%d XP", last.rating, last.xp), FontFace = FONT.head, TextSize = 15, TextColor3 = rateColor(last.rating) }, n)
+		end
+	end
+	text({ Position = UDim2.fromOffset(20, 396), Size = UDim2.fromOffset(340, 60), Text = career.phase == "league" and "The top four after " .. ROUNDS .. " rounds play semi-finals and a final for the title." or "Win and you're one step closer to the trophy.", FontFace = FONT.head, TextSize = 14, TextWrapped = true, TextColor3 = COL.dim }, n)
+
+	-- objectives
+	local o = panel(body, 764, 0, 372, 250)
+	Menu.title(o, "OBJECTIVES", 24)
+	local position = table.find(order, career.club) or 12
+	label(o, { Position = UDim2.fromOffset(16, 46), Size = UDim2.fromOffset(340, 20), Text = "BOARD: " .. string.upper(career.objectives.club.text), FontFace = FONT.title, TextSize = 14 })
+	local onTrack = (career.objectives.club.target == 1 and position == 1) or (career.objectives.club.target > 1 and position <= career.objectives.club.target)
+	label(o, { Position = UDim2.fromOffset(16, 66), Size = UDim2.fromOffset(340, 18), Text = "Currently " .. ordinal(position) .. (onTrack and "   ·   ON TRACK" or "   ·   BEHIND"), TextSize = 14, TextColor3 = onTrack and COL.win or COL.coral })
+	for i, obj in career.objectives.personal do
+		local y = 100 + (i - 1) * 66
+		label(o, { Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(260, 20), Text = string.upper(obj.text), FontFace = FONT.title, TextSize = 14, TextColor3 = obj.done and COL.win or COL.text })
+		label(o, { Position = UDim2.fromOffset(250, y), Size = UDim2.fromOffset(106, 20), Text = obj.done and "DONE" or (obj.progress .. " / " .. obj.target), TextSize = 14, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Right })
+		bar(o, 16, y + 26, 340, 8, obj.progress / obj.target, obj.done and COL.win or COL.teal)
+	end
+
+	-- latest news
+	local nw = panel(body, 764, 262, 372, 214)
+	Menu.title(nw, "INBOX" .. (unread(career) > 0 and ("  (" .. unread(career) .. " NEW)") or ""), 24)
+	for i = 1, math.min(3, #career.inbox) do
+		local item = career.inbox[i]
+		local y = 46 + (i - 1) * 46
+		local dot = frame({ Position = UDim2.fromOffset(16, y + 6), Size = UDim2.fromOffset(8, 8), BackgroundColor3 = item.read and COL.dim or (KIND_COLORS[item.kind] or COL.teal) }, nw)
+		round(dot, 4)
+		label(nw, { Position = UDim2.fromOffset(32, y), Size = UDim2.fromOffset(324, 20), Text = item.title, FontFace = FONT.title, TextSize = 14, TextTruncate = Enum.TextTruncate.AtEnd })
+		label(nw, { Position = UDim2.fromOffset(32, y + 18), Size = UDim2.fromOffset(324, 18), Text = item.body, TextSize = 13, TextColor3 = COL.dim, TextTruncate = Enum.TextTruncate.AtEnd })
+	end
+	local open = secondaryButton({ Position = UDim2.fromOffset(16, 180), Size = UDim2.fromOffset(160, 26) }, nw, "OPEN INBOX", 14)
+	open.Activated:Connect(function()
+		Menu.careerTab = 4
+		Menu.refreshCareer()
+	end)
+end
+
+---------------------------------------------------------------- TRAINING
+
+local function trainingTab(body, career)
+	local l = panel(body, 0, 0, 640, 476)
+	Menu.title(l, "TRAINING", 28)
+	label(l, { Position = UDim2.fromOffset(16, 48), Size = UDim2.fromOffset(608, 36), Text = "Pick a focus: every match adds progress to it (more for a good rating). At 100 the attribute goes up by one. Level-up points (+) raise any attribute straight away.", TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+	label(l, { Position = UDim2.fromOffset(16, 88), Size = UDim2.fromOffset(608, 20), Text = career.points > 0 and (career.points .. " TRAINING POINT" .. (career.points == 1 and "" or "S") .. " TO SPEND") or "LEVEL UP TO EARN TRAINING POINTS", FontFace = FONT.title, TextSize = 15, TextColor3 = career.points > 0 and COL.lime or COL.dim })
+	for i, attr in Teams.ATTRS do
+		local y = 120 + (i - 1) * 58
+		local v = career.attrs[attr]
+		local focus = career.focus == attr
+		local row = frame({ Position = UDim2.fromOffset(12, y), Size = UDim2.fromOffset(616, 52), BackgroundColor3 = focus and COL.panelHi or COL.bg2, BackgroundTransparency = focus and 0.2 or 0.6 }, l)
+		if focus then
+			outline(row, COL.teal, 1, 0.2)
+		end
+		label(row, { Position = UDim2.fromOffset(12, 4), Size = UDim2.fromOffset(150, 22), Text = Teams.ATTR_NAMES[attr], FontFace = FONT.title, TextSize = 16 })
+		text({ Position = UDim2.fromOffset(160, 4), Size = UDim2.fromOffset(44, 44), Text = tostring(v), FontFace = FONT.num, TextSize = 26, TextColor3 = ratingColor(v) }, row)
+		label(row, { Position = UDim2.fromOffset(12, 28), Size = UDim2.fromOffset(150, 18), Text = "progress " .. math.floor(career.progress[attr] or 0) .. "%", TextSize = 13, TextColor3 = COL.dim })
+		bar(row, 214, 22, 220, 8, (career.progress[attr] or 0) / 100, focus and COL.teal or COL.violet)
+		local fb = button({ Position = UDim2.fromOffset(446, 10), Size = UDim2.fromOffset(110, 32), BackgroundTransparency = focus and 0 or 0.3, BackgroundColor3 = focus and COL.teal or COL.panelHi }, row)
+		text({ Size = UDim2.fromScale(1, 1), Text = focus and "FOCUS" or "SET FOCUS", FontFace = FONT.title, TextSize = 14, TextColor3 = focus and COL.ink or COL.text }, fb)
+		fb.Activated:Connect(function()
+			remote:FireServer("career_focus", { attr = attr })
+		end)
+		if career.points > 0 and v < 99 then
+			local plus = button({ Position = UDim2.fromOffset(566, 10), Size = UDim2.fromOffset(38, 32), BackgroundTransparency = 0, BackgroundColor3 = COL.lime }, row)
+			text({ Size = UDim2.fromScale(1, 1), Text = "+", FontFace = FONT.title, TextSize = 22, TextColor3 = COL.ink }, plus)
+			plus.Activated:Connect(function()
+				remote:FireServer("career_train", { attr = attr })
+			end)
+		end
+	end
+
+	local r = panel(body, 652, 0, 484, 476)
+	Menu.title(r, "PERKS", 28)
+	for i, perk in Teams.PERKS do
+		local y = 50 + (i - 1) * 44
+		local have = career.perks and career.perks[perk.name]
+		local v = career.attrs[perk.attr]
+		local tag = frame({ Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(110, 34), BackgroundColor3 = have and COL.gold or COL.bg2, BackgroundTransparency = have and 0 or 0.4 }, r)
+		text({ Size = UDim2.fromScale(1, 1), Text = perk.name, FontFace = FONT.title, TextSize = 14, TextColor3 = have and COL.ink or COL.dim }, tag)
+		label(r, { Position = UDim2.fromOffset(136, y), Size = UDim2.fromOffset(240, 34), Text = perk.info, TextSize = 14, TextColor3 = have and COL.text or COL.dim })
+		label(r, { Position = UDim2.fromOffset(370, y), Size = UDim2.fromOffset(100, 34), Text = have and "UNLOCKED" or (perk.attr .. " " .. v .. " / " .. Teams.PERK_LEVEL), FontFace = FONT.title, TextSize = 13, TextColor3 = have and COL.win or COL.dim, TextXAlignment = Enum.TextXAlignment.Right })
+	end
+	label(r, { Position = UDim2.fromOffset(16, 324), Size = UDim2.fromOffset(450, 22), Text = "TRAINING CAMP", FontFace = FONT.title, TextSize = 18, TextColor3 = COL.teal })
+	label(r, { Position = UDim2.fromOffset(16, 348), Size = UDim2.fromOffset(450, 40), Text = string.format("A week of extra work on your focus (%s): +70 progress. Costs %d from your bank (you have %d). Paid from your salary.", Teams.ATTR_NAMES[career.focus], CAMP_COST, career.money), TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+	local camp = bigButton(r, career.money >= CAMP_COST and "BOOK TRAINING CAMP" or "NOT ENOUGH MONEY", UDim2.fromOffset(16, 400), UDim2.fromOffset(300, 48), function()
+		if career.money >= CAMP_COST then
+			remote:FireServer("career_camp", {})
+		else
+			Menu.toast("Play more matches to earn your salary")
+		end
+	end)
+	camp.AutoButtonColor = false
+end
+
+---------------------------------------------------------------- LEAGUE
+
+local function leagueTab(body, career)
+	local tbl = panel(body, 0, 0, 560, 476)
+	Menu.title(tbl, Teams.LEAGUE .. "   ·   SEASON " .. career.season, 24)
+	local headers = { { "#", 14 }, { "CLUB", 50 }, { "P", 300 }, { "W", 344 }, { "L", 388 }, { "+/-", 428 }, { "PTS", 492 } }
+	for _, h in headers do
+		label(tbl, { Position = UDim2.fromOffset(h[2], 44), Size = UDim2.fromOffset(50, 18), Text = h[1], FontFace = FONT.title, TextSize = 13, TextColor3 = COL.dim })
+	end
+	for position, id in standings(career.table) do
+		local y = 66 + (position - 1) * 33
+		local row = career.table[id]
+		local mine = id == career.club
+		frame({ Position = UDim2.fromOffset(8, y), Size = UDim2.fromOffset(544, 30), BackgroundColor3 = mine and COL.lime or (position <= 4 and COL.teal or COL.panelHi), BackgroundTransparency = mine and 0.75 or (position <= 4 and 0.85 or (position % 2 == 0 and 0.8 or 0.92)) }, tbl)
+		local color = mine and COL.lime or COL.text
+		label(tbl, { Position = UDim2.fromOffset(14, y), Size = UDim2.fromOffset(30, 30), Text = tostring(position), FontFace = FONT.num, TextSize = 16, TextColor3 = color })
+		local dot = frame({ Position = UDim2.fromOffset(50, y + 9), Size = UDim2.fromOffset(12, 12), BackgroundColor3 = Teams.list[id].primary }, tbl)
+		round(dot, 6)
+		label(tbl, { Position = UDim2.fromOffset(70, y), Size = UDim2.fromOffset(220, 30), Text = Teams.list[id].name, FontFace = FONT.title, TextSize = 14, TextColor3 = color })
+		for k, value in { row.p, row.w, row.l, row.sf - row.sa, row.pts } do
+			label(tbl, { Position = UDim2.fromOffset(({ 300, 344, 388, 428, 492 })[k], y), Size = UDim2.fromOffset(50, 30), Text = tostring(value), FontFace = FONT.num, TextSize = 16, TextColor3 = color })
+		end
+	end
+	label(tbl, { Position = UDim2.fromOffset(14, 466 - 12), Size = UDim2.fromOffset(530, 16), Text = "Top four (highlighted) go to the playoffs.", TextSize = 12, TextColor3 = COL.dim })
+
+	local f = panel(body, 572, 0, 564, 476)
+	Menu.title(f, "FIXTURES AND RESULTS", 24)
+	local results = {}
+	for _, r in career.results or {} do
+		if r.phase == "league" then
+			results[r.round] = r
+		end
+	end
+	for round = 1, ROUNDS do
+		local y = 46 + (round - 1) * 30
+		local opp = opponentFor(career.club, round)
+		local r = results[round]
+		local current = career.phase == "league" and round == career.round
+		frame({ Position = UDim2.fromOffset(8, y), Size = UDim2.fromOffset(548, 27), BackgroundColor3 = current and COL.violet or COL.panelHi, BackgroundTransparency = current and 0.5 or (round % 2 == 0 and 0.8 or 0.92) }, f)
+		label(f, { Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(60, 27), Text = "R" .. round, FontFace = FONT.title, TextSize = 14, TextColor3 = COL.dim })
+		label(f, { Position = UDim2.fromOffset(64, y), Size = UDim2.fromOffset(240, 27), Text = Teams.list[opp].name, FontFace = FONT.title, TextSize = 14 })
+		if r then
+			label(f, { Position = UDim2.fromOffset(300, y), Size = UDim2.fromOffset(140, 27), Text = (r.won and "W  " or "L  ") .. r.score, FontFace = FONT.title, TextSize = 14, TextColor3 = r.won and COL.win or COL.coral })
+			local box = frame({ Position = UDim2.fromOffset(490, y + 3), Size = UDim2.fromOffset(52, 21), BackgroundColor3 = rateColor(r.rating) }, f)
+			text({ Size = UDim2.fromScale(1, 1), Text = string.format("%.1f", r.rating), FontFace = FONT.num, TextSize = 15, TextColor3 = COL.ink }, box)
+		else
+			label(f, { Position = UDim2.fromOffset(300, y), Size = UDim2.fromOffset(240, 27), Text = current and "NEXT" or "", FontFace = FONT.title, TextSize = 14, TextColor3 = COL.teal })
+		end
+	end
+	-- playoffs
+	local y = 46 + ROUNDS * 30 + 8
+	if career.playoff then
+		local p = career.playoff
+		local function name(id)
+			return id and Teams.list[id].short or "?"
+		end
+		local semis = p.semis or {}
+		local line = string.format("PLAYOFFS:  %s v %s  ·  %s v %s", name(semis[1] and semis[1][1]), name(semis[1] and semis[1][2]), name(semis[2] and semis[2][1]), name(semis[2] and semis[2][2]))
+		label(f, { Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(530, 20), Text = line, FontFace = FONT.title, TextSize = 14, TextColor3 = COL.coral })
+		local final = (p.winners and p.winners[1] and p.winners[2]) and ("FINAL:  " .. name(p.winners[1]) .. " v " .. name(p.winners[2])) or "FINAL:  to be decided"
+		label(f, { Position = UDim2.fromOffset(16, y + 22), Size = UDim2.fromOffset(530, 20), Text = final, FontFace = FONT.title, TextSize = 14, TextColor3 = COL.gold })
+	else
+		label(f, { Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(530, 40), Text = "After round " .. ROUNDS .. ": semi-finals (1st v 4th, 2nd v 3rd) and a final, each best of three.", TextSize = 14, TextColor3 = COL.dim, TextWrapped = true })
+	end
+end
+
+---------------------------------------------------------------- INBOX
+
+local function inboxTab(body, career)
+	local p = panel(body, 0, 0, 1136, 476)
+	Menu.title(p, "INBOX", 26)
+	local list = make("ScrollingFrame", {
+		Position = UDim2.fromOffset(12, 46),
+		Size = UDim2.new(1, -24, 1, -58),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 6,
+		ScrollBarImageColor3 = COL.line,
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	}, p)
+	make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, list)
+	if #career.inbox == 0 then
+		label(list, { Size = UDim2.new(1, 0, 0, 30), Text = "No messages yet.", TextColor3 = COL.dim, TextSize = 16 })
+	end
+	for i, item in career.inbox do
+		local isOffer = item.offer ~= nil and not item.answered
+		local row = frame({ Size = UDim2.new(1, -10, 0, isOffer and 84 or 62), BackgroundColor3 = item.read and COL.bg2 or COL.panelHi, BackgroundTransparency = item.read and 0.5 or 0.2, LayoutOrder = i }, list)
+		local color = KIND_COLORS[item.kind] or COL.teal
+		frame({ Size = UDim2.new(0, 4, 1, 0), BackgroundColor3 = color }, row)
+		label(row, { Position = UDim2.fromOffset(16, 6), Size = UDim2.fromOffset(120, 18), Text = string.upper(item.kind or "NEWS") .. "  ·  S" .. (item.season or 1) .. " R" .. (item.round or 1), FontFace = FONT.title, TextSize = 12, TextColor3 = color })
+		label(row, { Position = UDim2.fromOffset(150, 6), Size = UDim2.new(1, -170, 0, 22), Text = item.title, FontFace = FONT.title, TextSize = 17 })
+		label(row, { Position = UDim2.fromOffset(150, 30), Size = UDim2.new(1, -170, 0, 28), Text = item.body, TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top })
+		if item.offer and item.answered then
+			label(row, { Position = UDim2.new(1, -150, 0, 6), Size = UDim2.fromOffset(130, 18), Text = item.result or "", FontFace = FONT.title, TextSize = 13, TextColor3 = item.result == "ACCEPTED" and COL.win or COL.dim, TextXAlignment = Enum.TextXAlignment.Right })
+		end
+		if isOffer then
+			for k, word in { "ACCEPT", "DECLINE" } do
+				local b = button({ Position = UDim2.fromOffset(150 + (k - 1) * 130, 52), Size = UDim2.fromOffset(120, 26), BackgroundTransparency = 0, BackgroundColor3 = k == 1 and COL.win or COL.panel }, row)
+				text({ Size = UDim2.fromScale(1, 1), Text = word, FontFace = FONT.title, TextSize = 14, TextColor3 = k == 1 and COL.ink or COL.text }, b)
+				b.Activated:Connect(function()
+					remote:FireServer("career_offer", { id = item.offer.id, accept = k == 1 })
+				end)
+			end
+		end
+	end
+	if unread(career) > 0 then
+		remote:FireServer("career_read", {})
+	end
+end
+
+---------------------------------------------------------------- HISTORY
+
+local function historyTab(body, career)
+	local l = panel(body, 0, 0, 420, 476)
+	Menu.title(l, "CAREER TOTALS", 26)
+	local st = career.stats
+	local rows = {
+		{ "Seasons", tostring(#career.history) },
+		{ "Matches", tostring(st.matches) },
+		{ "Wins", tostring(st.wins) },
+		{ "Kills", tostring(st.kills) },
+		{ "Aces", tostring(st.aces) },
+		{ "Blocks", tostring(st.blocks) },
+		{ "Digs", tostring(st.digs) },
+		{ "Trophies", tostring(career.trophies) },
+	}
+	for i, row in rows do
+		local y = 46 + (i - 1) * 30
+		frame({ Position = UDim2.fromOffset(12, y), Size = UDim2.fromOffset(396, 27), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.75 or 0.9 }, l)
+		label(l, { Position = UDim2.fromOffset(24, y), Size = UDim2.fromOffset(200, 27), Text = row[1], TextSize = 15 })
+		label(l, { Position = UDim2.fromOffset(200, y), Size = UDim2.fromOffset(196, 27), Text = row[2], FontFace = FONT.num, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Right })
+	end
+	label(l, { Position = UDim2.fromOffset(16, 300), Size = UDim2.fromOffset(390, 22), Text = "AWARDS", FontFace = FONT.title, TextSize = 18, TextColor3 = COL.gold })
+	if #career.awards == 0 then
+		label(l, { Position = UDim2.fromOffset(16, 326), Size = UDim2.fromOffset(390, 22), Text = "None yet. Titles, Team of the Season and more go here.", TextSize = 14, TextColor3 = COL.dim })
+	end
+	for i, award in career.awards do
+		if i > 5 then
+			break
+		end
+		label(l, { Position = UDim2.fromOffset(16, 326 + (i - 1) * 26), Size = UDim2.fromOffset(390, 22), Text = "★  " .. award.name .. "   ·   SEASON " .. award.season, FontFace = FONT.title, TextSize = 14 })
+	end
+
+	local r = panel(body, 432, 0, 704, 476)
+	Menu.title(r, "SEASON BY SEASON", 26)
+	local headers = { { "SEASON", 16 }, { "CLUB", 96 }, { "POS", 330 }, { "P", 384 }, { "W", 430 }, { "K", 476 }, { "B", 522 }, { "AVG", 566 }, { "OVR", 630 } }
+	for _, h in headers do
+		label(r, { Position = UDim2.fromOffset(h[2], 46), Size = UDim2.fromOffset(70, 18), Text = h[1], FontFace = FONT.title, TextSize = 13, TextColor3 = COL.dim })
+	end
+	if #career.history == 0 then
+		label(r, { Position = UDim2.fromOffset(16, 76), Size = UDim2.fromOffset(660, 22), Text = "Your first season is under way.", TextSize = 15, TextColor3 = COL.dim })
+	end
+	for i, h in career.history do
+		local y = 70 + (i - 1) * 32
+		if y > 440 then
+			break
+		end
+		frame({ Position = UDim2.fromOffset(8, y), Size = UDim2.fromOffset(688, 29), BackgroundColor3 = h.champion and COL.gold or COL.panelHi, BackgroundTransparency = h.champion and 0.75 or (i % 2 == 0 and 0.8 or 0.92) }, r)
+		local values = { tostring(h.season), Teams.list[h.club].name .. (h.champion and "  ★" or ""), ordinal(h.position), tostring(h.matches), tostring(h.wins), tostring(h.kills), tostring(h.blocks), string.format("%.1f", h.avg or 0), tostring(h.ovr or "") }
+		for k, value in values do
+			label(r, { Position = UDim2.fromOffset(headers[k][2], y), Size = UDim2.fromOffset(k == 2 and 230 or 60, 29), Text = value, FontFace = k == 2 and FONT.title or FONT.num, TextSize = 14 })
+		end
+	end
+end
+
+---------------------------------------------------------------- the hub and the match report
+
 function Menu.refreshCareer()
 	local career = profile and profile.career
 	if not career then
 		return
 	end
 	local def = Teams.list[career.club]
-	Menu.chSub.Text = string.format("SEASON %d   ·   ROUND %d OF %d   ·   %d TROPH%s", career.season, career.round, ROUNDS, career.trophies, career.trophies == 1 and "Y" or "IES")
+	Menu.chSub.Text = string.format("%s   ·   SEASON %d   ·   %s   ·   %d TROPH%s", def.name, career.season, phaseLabel(career), career.trophies, career.trophies == 1 and "Y" or "IES")
 	Menu.chSaving.Text = savingOk and "" or "Progress isn't being saved here (in Studio, turn on API access in Game Settings)."
-
-	-- your player
-	local c = Menu.chCard
-	c:ClearAllChildren()
-	outline(c, COL.line, 1, 0.65)
-	shirt(c, def.primary, career.number, 70, UDim2.fromOffset(60, 60))
-	text({ Position = UDim2.fromOffset(110, 18), Size = UDim2.fromOffset(150, 28), Text = career.role, FontFace = FONT.num, TextSize = 24, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left }, c)
-	text({ Position = UDim2.fromOffset(110, 44), Size = UDim2.fromOffset(250, 22), Text = string.upper(player.DisplayName), FontFace = FONT.title, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Left }, c)
-	text({ Position = UDim2.fromOffset(110, 66), Size = UDim2.fromOffset(250, 20), Text = def.name, FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, c)
-	local ovrBox = frame({ Position = UDim2.fromOffset(290, 16), Size = UDim2.fromOffset(66, 60), BackgroundColor3 = ratingColor(career.ovr) }, c)
-	round(ovrBox, 4)
-	text({ Position = UDim2.fromOffset(0, 2), Size = UDim2.new(1, 0, 0, 38), Text = tostring(career.ovr), FontFace = FONT.num, TextSize = 34, TextColor3 = COL.ink }, ovrBox)
-	text({ Position = UDim2.fromOffset(0, 40), Size = UDim2.new(1, 0, 0, 14), Text = "OVR", FontFace = FONT.title, TextSize = 12, TextColor3 = COL.ink }, ovrBox)
-	local need = 100 * career.level
-	text({ Position = UDim2.fromOffset(20, 104), Size = UDim2.fromOffset(200, 20), Text = "LEVEL " .. career.level, FontFace = FONT.title, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, c)
-	text({ Position = UDim2.fromOffset(150, 104), Size = UDim2.fromOffset(200, 20), Text = career.xp .. " / " .. need .. " XP", FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Right }, c)
-	local xpBack = frame({ Position = UDim2.fromOffset(20, 128), Size = UDim2.fromOffset(332, 8), BackgroundColor3 = COL.bg2 }, c)
-	frame({ Size = UDim2.fromScale(math.clamp(career.xp / need, 0, 1), 1), BackgroundColor3 = COL.teal }, xpBack)
-	text({ Position = UDim2.fromOffset(20, 148), Size = UDim2.fromOffset(332, 22), Text = career.points > 0 and ("TRAINING: " .. career.points .. " POINT" .. (career.points == 1 and "" or "S") .. " TO SPEND") or "TRAINING: LEVEL UP TO EARN POINTS", FontFace = FONT.title, TextSize = 16, TextColor3 = career.points > 0 and COL.lime or COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, c)
-	for i, attr in Teams.ATTRS do
-		local y = 180 + (i - 1) * 40
-		local v = career.attrs[attr]
-		text({ Position = UDim2.fromOffset(20, y), Size = UDim2.fromOffset(110, 30), Text = Teams.ATTR_NAMES[attr], FontFace = FONT.head, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left }, c)
-		local back = frame({ Position = UDim2.fromOffset(130, y + 11), Size = UDim2.fromOffset(150, 8), BackgroundColor3 = COL.bg2 }, c)
-		frame({ Size = UDim2.fromScale(v / 100, 1), BackgroundColor3 = ratingColor(v) }, back)
-		text({ Position = UDim2.fromOffset(284, y), Size = UDim2.fromOffset(32, 30), Text = tostring(v), FontFace = FONT.num, TextSize = 19, TextXAlignment = Enum.TextXAlignment.Right }, c)
-		if career.points > 0 and v < 99 then
-			local plus = button({ Position = UDim2.fromOffset(322, y + 2), Size = UDim2.fromOffset(30, 26), BackgroundTransparency = 0, BackgroundColor3 = COL.lime }, c)
-			round(plus, 4)
-			text({ Size = UDim2.fromScale(1, 1), Text = "+", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.ink }, plus)
-			plus.Activated:Connect(function()
-				remote:FireServer("career_train", { attr = attr })
-			end)
-		end
+	Menu.chTabs:ClearAllChildren()
+	local names = table.clone(CAREER_TABS)
+	if unread(career) > 0 then
+		names[4] = "INBOX (" .. unread(career) .. ")"
 	end
-	local st = career.stats
-	text({ Position = UDim2.fromOffset(20, 428), Size = UDim2.fromOffset(332, 60), Text = string.format("MATCHES %d   WINS %d\nKILLS %d   ACES %d   BLOCKS %d   DIGS %d", st.matches, st.wins, st.kills, st.aces, st.blocks, st.digs), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, c)
-
-	-- next match
-	local n = Menu.chNext
-	n:ClearAllChildren()
-	outline(n, COL.line, 1, 0.65)
-	local opp = opponentFor(career.club, career.round)
-	Menu.title(n, "NEXT MATCH", 30)
-	text({ Position = UDim2.fromOffset(0, 54), Size = UDim2.new(1, 0, 0, 20), Text = "ROUND " .. career.round .. " OF " .. ROUNDS .. "   ·   " .. os.date("%d %B"), FontFace = FONT.head, TextSize = 15 }, n)
-	for i, id in { career.club, opp } do
-		local x = i == 1 and 96 or 276
-		local r = Teams.ratings(id)
-		badge(n, id, 92, UDim2.fromOffset(x, 92), Vector2.new(0.5, 0))
-		text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(x, 192), Size = UDim2.fromOffset(170, 20), Text = Teams.list[id].name, FontFace = FONT.title, TextSize = 15 }, n)
-		starRow(n, Teams.stars(r.OVR), 16, UDim2.fromOffset(x, 216), Vector2.new(0.5, 0))
-		text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(x, 236), Size = UDim2.fromOffset(170, 18), Text = "OVR " .. r.OVR .. "   ·   " .. ordinal(table.find(standings(career.table), id) or 12), FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim }, n)
-	end
-	text({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(186, 138), Size = UDim2.fromOffset(60, 40), Text = "V", FontFace = FONT.num, TextSize = 34, TextColor3 = COL.dim }, n)
-	bigButton(n, "PLAY MATCH  ▸", UDim2.fromOffset(40, 276), UDim2.fromOffset(292, 54), function()
-		if Menu.waiting then
-			return
-		end
-		Menu.waiting = true
-		Menu.loading.Visible = true
-		remote:FireServer("start", { mode = "career" })
-		task.delay(15, function()
-			if Menu.waiting and inMenu then
-				Menu.waiting = false
-				Menu.loading.Visible = false
-			end
-		end)
-	end)
-	local last = career.last
-	if last then
-		local line = string.format("LAST: %s %s v %s   ·   +%d XP", last.won and "WON" or "LOST", last.score, Teams.list[last.opponent].short, last.xp)
-		text({ Position = UDim2.fromOffset(20, 350), Size = UDim2.fromOffset(332, 22), Text = line, FontFace = FONT.title, TextSize = 16, TextColor3 = last.won and COL.win or COL.coral }, n)
-		if last.levels and last.levels > 0 then
-			text({ Position = UDim2.fromOffset(20, 374), Size = UDim2.fromOffset(332, 20), Text = "LEVEL UP!  +" .. (3 * last.levels) .. " TRAINING POINTS", FontFace = FONT.title, TextSize = 15, TextColor3 = COL.lime }, n)
-		end
-		if last.champion then
-			text({ Position = UDim2.fromOffset(20, 400), Size = UDim2.fromOffset(332, 44), Text = last.champion == career.club and "CHAMPIONS! The trophy is yours." or ("Season over: you finished " .. ordinal(last.position or 12) .. ". Champions: " .. Teams.list[last.champion].name), FontFace = FONT.head, TextSize = 15, TextWrapped = true, TextColor3 = COL.gold }, n)
-		end
-	end
-	text({ Position = UDim2.fromOffset(20, 452), Size = UDim2.fromOffset(332, 46), Text = "You play as " .. ROLE_WORDS[career.role] .. ". XP comes from playing, winning and your kills, aces, blocks and digs.", FontFace = FONT.head, TextSize = 14, TextWrapped = true, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, n)
-
-	-- league table
-	local tbl = Menu.chTable
-	tbl:ClearAllChildren()
-	outline(tbl, COL.line, 1, 0.65)
-	Menu.title(tbl, Teams.LEAGUE, 26)
-	local headers = { { "#", 14 }, { "CLUB", 44 }, { "P", 214 }, { "W", 250 }, { "L", 286 }, { "PTS", 322 } }
-	for _, h in headers do
-		text({ Position = UDim2.fromOffset(h[2], 48), Size = UDim2.fromOffset(40, 18), Text = h[1], FontFace = FONT.title, TextSize = 13, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, tbl)
-	end
-	for position, id in standings(career.table) do
-		local y = 70 + (position - 1) * 36
-		local row = career.table[id]
-		local mine = id == career.club
-		frame({ Position = UDim2.fromOffset(8, y), Size = UDim2.fromOffset(356, 32), BackgroundColor3 = mine and COL.lime or COL.panelHi, BackgroundTransparency = mine and 0.75 or (position % 2 == 0 and 0.75 or 0.9) }, tbl)
-		local color = mine and COL.lime or COL.text
-		text({ Position = UDim2.fromOffset(14, y), Size = UDim2.fromOffset(30, 32), Text = tostring(position), FontFace = FONT.num, TextSize = 17, TextColor3 = color, TextXAlignment = Enum.TextXAlignment.Left }, tbl)
-		local dot = frame({ Position = UDim2.fromOffset(44, y + 10), Size = UDim2.fromOffset(12, 12), BackgroundColor3 = Teams.list[id].primary }, tbl)
-		round(dot, 6)
-		text({ Position = UDim2.fromOffset(62, y), Size = UDim2.fromOffset(150, 32), Text = Teams.list[id].name, FontFace = FONT.title, TextSize = 14, TextColor3 = color, TextXAlignment = Enum.TextXAlignment.Left }, tbl)
-		for k, value in { row.p, row.w, row.l, row.pts } do
-			text({ Position = UDim2.fromOffset(({ 214, 250, 286, 322 })[k], y), Size = UDim2.fromOffset(36, 32), Text = tostring(value), FontFace = FONT.num, TextSize = 17, TextColor3 = color, TextXAlignment = Enum.TextXAlignment.Left }, tbl)
-		end
+	Menu.tabs(Menu.chTabs, UDim2.new(), names, Menu.careerTab, function(i)
+		Menu.careerTab = i
+		Menu.refreshCareer()
+	end, 150)
+	local body = Menu.chBody
+	body:ClearAllChildren()
+	local builders = { overviewTab, trainingTab, leagueTab, inboxTab, historyTab }
+	builders[Menu.careerTab](body, career)
+end
+Menu.onShow.career = function()
+	Menu.refreshCareer()
+	if Menu.pendingReport then
+		Menu.showReport(Menu.pendingReport)
+		Menu.pendingReport = nil
 	end
 end
-Menu.onShow.career = Menu.refreshCareer
+
+-- after a career match: rating, stats, XP and progress
+do
+	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.45, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 25 }, board)
+	local reportPanel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(640, 470), BackgroundColor3 = COL.bg2, ZIndex = 26 }, shade)
+	outline(reportPanel, COL.line, 1, 0.3)
+	frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.teal, ZIndex = 27 }, reportPanel)
+	Menu.reportBody = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 27 }, reportPanel)
+	Menu.reportShade = shade
+end
+
+function Menu.showReport(r)
+	local body = Menu.reportBody
+	body:ClearAllChildren()
+	local career = profile and profile.career
+	text({ Position = UDim2.fromOffset(24, 14), Size = UDim2.fromOffset(400, 34), Text = "MATCH REPORT", FontFace = FONT.body, TextSize = 30, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left }, body)
+	text({ Position = UDim2.fromOffset(24, 52), Size = UDim2.fromOffset(420, 26), Text = (r.won and "WIN  " or "DEFEAT  ") .. r.score .. "  v  " .. Teams.list[r.opponent].name, FontFace = FONT.title, TextSize = 20, TextColor3 = r.won and COL.win or COL.coral, TextXAlignment = Enum.TextXAlignment.Left }, body)
+	local rate = frame({ Position = UDim2.fromOffset(500, 18), Size = UDim2.fromOffset(116, 92), BackgroundColor3 = rateColor(r.rating or 6) }, body)
+	text({ Position = UDim2.fromOffset(0, 4), Size = UDim2.new(1, 0, 0, 60), Text = string.format("%.1f", r.rating or 6), FontFace = FONT.num, TextSize = 52, TextColor3 = COL.ink }, rate)
+	text({ Position = UDim2.fromOffset(0, 64), Size = UDim2.new(1, 0, 0, 20), Text = "RATING", FontFace = FONT.title, TextSize = 14, TextColor3 = COL.ink }, rate)
+	local stats = r.stats or {}
+	for i, s in { { "KILLS", stats.kills }, { "ACES", stats.aces }, { "BLOCKS", stats.blocks }, { "DIGS", stats.digs } } do
+		local x = 24 + (i - 1) * 118
+		local box = frame({ Position = UDim2.fromOffset(x, 128), Size = UDim2.fromOffset(108, 74), BackgroundColor3 = COL.panelHi, BackgroundTransparency = 0.4 }, body)
+		text({ Position = UDim2.fromOffset(0, 6), Size = UDim2.new(1, 0, 0, 40), Text = tostring(s[2] or 0), FontFace = FONT.num, TextSize = 34 }, box)
+		text({ Position = UDim2.fromOffset(0, 48), Size = UDim2.new(1, 0, 0, 18), Text = s[1], FontFace = FONT.title, TextSize = 13, TextColor3 = COL.dim }, box)
+	end
+	local lines = {
+		"+" .. r.xp .. " XP" .. ((r.levels or 0) > 0 and ("   ·   LEVEL UP! +" .. (3 * r.levels) .. " TRAINING POINTS") or ""),
+		r.focus and (Teams.ATTR_NAMES[r.focus] .. " training" .. ((r.focusGain or 0) > 0 and ("   ·   " .. r.focus .. " " .. r.focusFrom .. " → " .. (r.focusFrom + r.focusGain) .. "!") or ("   ·   progress " .. math.floor(career and career.progress[r.focus] or 0) .. "%"))) or "",
+		"+" .. (r.money or 0) .. " salary" .. (r.won and " (and a win bonus)" or ""),
+	}
+	if r.seasonOver then
+		table.insert(lines, r.champion == (career and career.history[#career.history] and career.history[#career.history].club) and "SEASON OVER: CHAMPIONS!" or ("SEASON OVER: " .. Teams.list[r.champion].name .. " are champions. Check your inbox for offers."))
+	end
+	for i, line in lines do
+		text({ Position = UDim2.fromOffset(24, 222 + (i - 1) * 32), Size = UDim2.fromOffset(592, 28), Text = line, FontFace = FONT.title, TextSize = 17, TextColor3 = i == 4 and COL.gold or COL.text, TextXAlignment = Enum.TextXAlignment.Left }, body)
+	end
+	local done = primaryButton({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -24, 1, -18), Size = UDim2.fromOffset(170, 44) }, body, "CONTINUE", 18)
+	done.Activated:Connect(function()
+		Menu.reportShade.Visible = false
+	end)
+	for _, d in body:GetDescendants() do
+		if d:IsA("GuiObject") then
+			d.ZIndex = 28
+		end
+	end
+	Menu.reportShade.Visible = true
+end
 
 function Menu.openCareer()
 	if not profile then
@@ -7435,6 +8707,7 @@ function Menu.openCareer()
 		return
 	end
 	if profile.career then
+		Menu.careerTab = 1
 		Menu.show("career")
 	else
 		newCareer.club = sel.home
@@ -7523,14 +8796,12 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 			end
 		end
 	elseif kind == "career_result" then
-		local r = a
-		local message = string.format("%s %s v %s   ·   +%d XP", r.won and "WIN" or "DEFEAT", r.score, Teams.list[r.opponent].short, r.xp)
-		if r.levels and r.levels > 0 then
-			message ..= "   ·   LEVEL UP!"
+		-- the match report shows when you're back in the career hub
+		if inMenu and Menu.current == "career" then
+			Menu.showReport(a)
+		else
+			Menu.pendingReport = a
 		end
-		task.delay(0.6, function()
-			Menu.toast(message)
-		end)
 	elseif kind == "online_queue" then
 		Menu.queued = a == true
 		queueCount = b or 0
@@ -7544,6 +8815,202 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 	end
 end)
 remote:FireServer("profile", {})
+
+---------------------------------------------------------------- customise: edit player, kits and courts
+
+local function saveCustom()
+	remote:FireServer("custom_save", Menu.custom)
+end
+
+local function customPanel(parent, x, y, w, h)
+	local f = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.12 }, parent)
+	outline(f, COL.line, 1, 0.45)
+	return f
+end
+
+local function customHeader(screenFrame, title, subtitle)
+	text({ Position = UDim2.fromOffset(72, 30), Size = UDim2.fromOffset(700, 44), Text = title, FontFace = FONT.body, TextSize = 40, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left }, screenFrame)
+	text({ Position = UDim2.fromOffset(74, 76), Size = UDim2.fromOffset(900, 22), Text = subtitle, FontFace = FONT.head, TextSize = 18, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, screenFrame)
+end
+
+local function stepper(parent, y, label, value, onStep)
+	text({ Position = UDim2.fromOffset(24, y), Size = UDim2.fromOffset(260, 40), Text = label, FontFace = FONT.title, TextSize = 18, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, parent)
+	for k, glyph in { "◀", "▶" } do
+		local arrow = secondaryButton({ Position = UDim2.fromOffset(k == 1 and 300 or 480, y), Size = UDim2.fromOffset(44, 40) }, parent, glyph, 18)
+		arrow.Activated:Connect(function()
+			onStep(k == 1 and -1 or 1)
+		end)
+	end
+	text({ Position = UDim2.fromOffset(344, y), Size = UDim2.fromOffset(136, 40), Text = value, FontFace = FONT.num, TextSize = 26 }, parent)
+end
+
+---------------------------------------------------------------- EDIT PLAYER
+
+do
+	local screenFrame = Menu.screen("editplayer")
+	customHeader(screenFrame, "EDIT PLAYER", "YOUR SHIRT NUMBER, POSITION AND KIT   ·   SAVED AUTOMATICALLY")
+	Menu.epArt = Menu.avatar(screenFrame, { Position = UDim2.fromOffset(60, 104), Size = UDim2.fromOffset(380, 520) }, 0.3)
+	Menu.epBody = customPanel(screenFrame, 460, 116, 750, 500)
+	Menu.hints(screenFrame, { { "BACK", "Back", Menu.back } }, UDim2.fromOffset(460, 636))
+end
+
+function Menu.refreshEditPlayer()
+	local c = Menu.epBody
+	c:ClearAllChildren()
+	outline(c, COL.line, 1, 0.45)
+	local custom = Menu.custom
+	local def = Teams.list[sel.home]
+	shirt(c, def.primary, custom.number, 110, UDim2.fromOffset(650, 90))
+	text({ Position = UDim2.fromOffset(580, 150), Size = UDim2.fromOffset(140, 22), Text = string.upper(player.DisplayName), FontFace = FONT.title, TextSize = 16 }, c)
+
+	stepper(c, 24, "SHIRT NUMBER", tostring(custom.number), function(d)
+		custom.number = (custom.number - 1 + d) % 99 + 1
+		saveCustom()
+		Menu.refreshEditPlayer()
+	end)
+
+	text({ Position = UDim2.fromOffset(24, 96), Size = UDim2.fromOffset(300, 30), Text = "PREFERRED POSITION", FontFace = FONT.title, TextSize = 18, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, c)
+	for i, role in Teams.ROLE_ORDER do
+		local chosen = custom.role == role
+		local b = button({ Position = UDim2.fromOffset(24 + (i - 1) * 104, 132), Size = UDim2.fromOffset(96, 44), BackgroundTransparency = chosen and 0 or 0.4, BackgroundColor3 = chosen and COL.violet or COL.panelHi }, c)
+		text({ Size = UDim2.fromScale(1, 1), Text = role, FontFace = FONT.title, TextSize = 20 }, b)
+		b.Activated:Connect(function()
+			custom.role = role
+			saveCustom()
+			Menu.refreshEditPlayer()
+		end)
+	end
+	text({ Position = UDim2.fromOffset(24, 182), Size = UDim2.fromOffset(520, 40), Text = Teams.ROLES[custom.role] .. ". In Quick Play you take this position unless you pick a player with P on the squad screen.", FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, c)
+
+	text({ Position = UDim2.fromOffset(24, 244), Size = UDim2.fromOffset(300, 30), Text = "WEAR THE TEAM KIT", FontFace = FONT.title, TextSize = 18, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, c)
+	for k, label in { "ON", "OFF" } do
+		local on = (k == 1) == custom.wearKit
+		local b = button({ Position = UDim2.fromOffset(300 + (k - 1) * 112, 238), Size = UDim2.fromOffset(104, 42), BackgroundTransparency = on and 0 or 0.4, BackgroundColor3 = on and COL.violet or COL.panelHi }, c)
+		text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = 18 }, b)
+		b.Activated:Connect(function()
+			custom.wearKit = k == 1
+			saveCustom()
+			Menu.refreshEditPlayer()
+		end)
+	end
+	text({ Position = UDim2.fromOffset(24, 290), Size = UDim2.fromOffset(700, 40), Text = "On: during matches your avatar's clothes are swapped for your team's shirt and shorts with your number on the back. You get them back after the match.", FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, c)
+
+	-- what your squad looks like with you in it
+	text({ Position = UDim2.fromOffset(24, 352), Size = UDim2.fromOffset(300, 30), Text = "YOUR KIT  ·  " .. def.name, FontFace = FONT.title, TextSize = 18, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, c)
+	local kit = Teams.kits(sel.home)[custom.kits[tostring(sel.home)] or 1]
+	for i, part in { { "SHIRT", kit.shirt }, { "SHORTS", kit.shorts } } do
+		local swatch = frame({ Position = UDim2.fromOffset(24 + (i - 1) * 150, 392), Size = UDim2.fromOffset(136, 64), BackgroundColor3 = part[2] }, c)
+		outline(swatch, COL.line, 1, 0.3)
+		text({ Size = UDim2.fromScale(1, 1), Text = part[1], FontFace = FONT.title, TextSize = 16, TextColor3 = contrast(part[2]) }, swatch)
+	end
+	local change = secondaryButton({ Position = UDim2.fromOffset(330, 404), Size = UDim2.fromOffset(220, 40) }, c, "CHANGE KITS AND COURTS", 15)
+	change.Activated:Connect(function()
+		Menu.openKits()
+	end)
+end
+Menu.onShow.editplayer = function()
+	Menu.refreshEditPlayer()
+	Menu.epArt.set("me")
+end
+
+function Menu.openEditPlayer()
+	Menu.show("editplayer")
+end
+
+---------------------------------------------------------------- KITS AND COURTS
+
+Menu.kitClub = 1
+do
+	local screenFrame = Menu.screen("kits")
+	customHeader(screenFrame, "KITS AND COURTS", "PICK A KIT FOR ANY CLUB AND THE COURT YOUR MATCHES ARE PLAYED ON")
+	Menu.kitsLeft = customPanel(screenFrame, 72, 116, 560, 500)
+	Menu.kitsRight = customPanel(screenFrame, 648, 116, 560, 500)
+	Menu.hints(screenFrame, { { "BACK", "Back", Menu.back } }, UDim2.fromOffset(72, 636))
+end
+
+function Menu.refreshKits()
+	local custom = Menu.custom
+	local id = Menu.kitClub
+	local l = Menu.kitsLeft
+	l:ClearAllChildren()
+	outline(l, COL.line, 1, 0.45)
+	text({ Position = UDim2.fromOffset(20, 14), Size = UDim2.fromOffset(300, 24), Text = "CLUB KITS", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, l)
+	badge(l, id, 84, UDim2.fromOffset(280, 46), Vector2.new(0.5, 0))
+	for k, glyph in { "◀", "▶" } do
+		local arrow = secondaryButton({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(k == 1 and 150 or 410, 88), Size = UDim2.fromOffset(44, 56) }, l, glyph, 20)
+		arrow.Activated:Connect(function()
+			Menu.kitClub = (Menu.kitClub - 1 + (k == 1 and -1 or 1)) % #Teams.list + 1
+			Menu.refreshKits()
+		end)
+	end
+	text({ Position = UDim2.fromOffset(0, 136), Size = UDim2.new(1, 0, 0, 28), Text = Teams.list[id].name, FontFace = FONT.title, TextSize = 24 }, l)
+	local chosenKit = custom.kits[tostring(id)] or 1
+	for k, kit in Teams.kits(id) do
+		local x = 24 + (k - 1) * 176
+		local on = k == chosenKit
+		local card = button({ Position = UDim2.fromOffset(x, 186), Size = UDim2.fromOffset(160, 250), BackgroundTransparency = on and 0.2 or 0.5, BackgroundColor3 = on and COL.panelHi or COL.bg2 }, l)
+		outline(card, on and COL.teal or COL.line, on and 2 or 1, on and 0 or 0.5)
+		text({ Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 22), Text = kit.name, FontFace = FONT.title, TextSize = 18, TextColor3 = on and COL.teal or COL.text }, card)
+		shirt(card, kit.shirt, (id == sel.home) and custom.number or 10, 100, UDim2.fromOffset(80, 100))
+		local shorts = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(80, 160), Size = UDim2.fromOffset(70, 34), BackgroundColor3 = kit.shorts }, card)
+		outline(shorts, COL.ink, 1, 0.6)
+		if on then
+			Menu.chip(card, "SELECTED", UDim2.fromOffset(38, 210), COL.teal)
+		end
+		card.Activated:Connect(function()
+			custom.kits[tostring(id)] = k
+			saveCustom()
+			Menu.refreshKits()
+		end)
+	end
+	text({ Position = UDim2.fromOffset(20, 448), Size = UDim2.fromOffset(520, 40), Text = "Your club wears this kit when you play as them. If the away side's kit clashes, they change into another.", FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left }, l)
+
+	local r = Menu.kitsRight
+	r:ClearAllChildren()
+	outline(r, COL.line, 1, 0.45)
+	text({ Position = UDim2.fromOffset(20, 14), Size = UDim2.fromOffset(300, 24), Text = "COURTS", FontFace = FONT.title, TextSize = 20, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, r)
+	for i, style in Teams.COURTS do
+		local y = 52 + (i - 1) * 86
+		local on = (custom.court or 1) == i
+		local row = button({ Position = UDim2.fromOffset(20, y), Size = UDim2.fromOffset(520, 78), BackgroundTransparency = on and 0.2 or 0.55, BackgroundColor3 = on and COL.panelHi or COL.bg2 }, r)
+		outline(row, on and COL.teal or COL.line, on and 2 or 1, on and 0 or 0.5)
+		-- a little court in the style's colours
+		local free = frame({ Position = UDim2.fromOffset(12, 9), Size = UDim2.fromOffset(120, 60), BackgroundColor3 = style.free }, row)
+		local court = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(90, 44), BackgroundColor3 = style.court }, free)
+		outline(court, style.lines, 2, 0)
+		frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromScale(0.5, 0), Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = style.lines }, court)
+		text({ Position = UDim2.fromOffset(150, 0), Size = UDim2.fromOffset(250, 78), Text = style.name, FontFace = FONT.title, TextSize = 22, TextColor3 = on and COL.teal or COL.text, TextXAlignment = Enum.TextXAlignment.Left }, row)
+		if on then
+			Menu.chip(row, "SELECTED", UDim2.fromOffset(420, 27), COL.teal)
+		end
+		row.Activated:Connect(function()
+			custom.court = i
+			saveCustom()
+			Menu.refreshKits()
+		end)
+	end
+end
+Menu.onShow.kits = Menu.refreshKits
+
+function Menu.openKits()
+	Menu.kitClub = sel.home
+	Menu.show("kits")
+end
+
+-- your saved choices arrive with your profile
+remote.OnClientEvent:Connect(function(kind, a)
+	if kind == "profile" and type(a) == "table" then
+		Menu.profileLoaded = true
+		local c = a.custom
+		if type(c) == "table" then
+			Menu.custom.number = c.number or Menu.custom.number
+			Menu.custom.role = c.role or Menu.custom.role
+			Menu.custom.wearKit = c.wearKit == true
+			Menu.custom.court = c.court or Menu.custom.court
+			Menu.custom.kits = type(c.kits) == "table" and c.kits or Menu.custom.kits
+		end
+	end
+end)
 ]]></ProtectedString>
 			</Properties>
 		</Item>

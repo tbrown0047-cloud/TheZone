@@ -15,11 +15,15 @@ local sel = {
 sel.lineup = sel.plan.lineup
 local history = {} -- results this session: { home, away, winner, score }
 
+-- your Edit Player, kit and court choices (saved with your profile)
+Menu.custom = { number = 7, role = "OH", wearKit = false, court = 1, kits = {} }
+
 -- a fresh game plan when you pick another club
 local function resetPlan()
 	sel.plan = Teams.cleanPlan(sel.home, nil)
 	sel.lineup = sel.plan.lineup
 	sel.slot = 2
+	sel.slotPicked = false
 end
 
 Menu.gui = make("ScreenGui", {
@@ -338,8 +342,9 @@ function Menu.avatar(parent, props, yaw)
 	vp.CurrentCamera = cam
 	local holder = { vp = vp }
 
-	-- source: "me" for your own character, or { team = id, number = n, ball = bool }
-	function holder.set(source)
+	-- source: "me" for your own character, or { team = id, number = n, ball = bool };
+	-- pose "cheer" throws the arms up like a cover star
+	function holder.set(source, pose)
 		holder.source = source
 		worldModel:ClearAllChildren()
 		local model
@@ -364,6 +369,17 @@ function Menu.avatar(parent, props, yaw)
 			return
 		end
 		local hum = prepareModel(model)
+		if pose == "cheer" then
+			local angles = { RightShoulder = { 150, 0, 38 }, LeftShoulder = { 150, 0, -38 }, RightElbow = { 25, 0, 0 }, LeftElbow = { 25, 0, 0 }, Waist = { -10, 0, 0 } }
+			for joint, a in angles do
+				local partName = ({ RightShoulder = "RightUpperArm", LeftShoulder = "LeftUpperArm", RightElbow = "RightLowerArm", LeftElbow = "LeftLowerArm", Waist = "UpperTorso" })[joint]
+				local part = model:FindFirstChild(partName)
+				local motor = part and part:FindFirstChild(joint)
+				if motor and motor:IsA("Motor6D") then
+					motor.C0 = motor.C0 * CFrame.Angles(math.rad(a[1]), math.rad(a[2]), math.rad(a[3]))
+				end
+			end
+		end
 		model:PivotTo(CFrame.Angles(0, math.pi + (yaw or 0.3), 0))
 		model.Parent = worldModel
 		if source ~= "me" and source.ball then
@@ -373,7 +389,7 @@ function Menu.avatar(parent, props, yaw)
 		local h = math.max(size.Y, 4)
 		local dist = (h * 0.56) / math.tan(math.rad(cam.FieldOfView / 2))
 		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, h * 0.04, dist), cf.Position + Vector3.new(0, h * 0.04, 0))
-		if hum then
+		if hum and pose ~= "cheer" then
 			local animator = hum:FindFirstChildOfClass("Animator") or make("Animator", {}, hum)
 			local anim = make("Animation", { AnimationId = shared:GetAttribute("PackIdle") or "rbxassetid://507766666" })
 			local ok, track = pcall(animator.LoadAnimation, animator, anim)
@@ -388,15 +404,9 @@ end
 
 ---------------------------------------------------------------- shared front-screen pieces
 
--- the ARENA VOLLEYBALL mark, bottom right
-do
-	local logo = frame({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.fromOffset(1240, 692), Size = UDim2.fromOffset(268, 42), BackgroundTransparency = 1 }, board)
-	local roundel = frame({ Size = UDim2.fromOffset(42, 42), BackgroundTransparency = 1 }, logo)
-	round(roundel, 21)
-	make("UIStroke", { Color = COL.text, Thickness = 2 }, roundel)
-	text({ Size = UDim2.fromScale(1, 1), Text = "AV", FontFace = FONT.title, TextSize = 17 }, roundel)
-	text({ Position = UDim2.fromOffset(50, 0), Size = UDim2.fromOffset(218, 42), Text = "ARENA VOLLEYBALL", FontFace = FONT.title, TextSize = 25, TextXAlignment = Enum.TextXAlignment.Left }, logo)
-end
+-- the ARENA VOLLEYBALL wordmark, bottom right
+local WORDMARK = Font.new("rbxasset://fonts/families/RobotoCondensed.json", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
+Menu.logo = text({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.fromOffset(1240, 692), Size = UDim2.fromOffset(320, 42), Text = "ARENA VOLLEYBALL", FontFace = WORDMARK, TextSize = 30, TextXAlignment = Enum.TextXAlignment.Right }, board)
 
 -- you, standing on the left like a cover star
 Menu.cover = Menu.avatar(board, { Position = UDim2.fromOffset(-30, 40), Size = UDim2.fromOffset(340, 680), Visible = false }, 0.35)
@@ -407,6 +417,75 @@ end
 player.CharacterAppearanceLoaded:Connect(refreshCover)
 if player.Character then
 	task.spawn(refreshCover)
+end
+
+---------------------------------------------------------------- the title screen (shown while the game loads)
+
+do
+	local ts = Menu.screen("title")
+	Menu.titleArt = Menu.avatar(ts, { Position = UDim2.fromOffset(-40, 0), Size = UDim2.fromOffset(660, 720) }, 0.55)
+	local mark = frame({ Position = UDim2.fromOffset(600, 120), Size = UDim2.fromOffset(640, 230), BackgroundTransparency = 1 }, ts)
+	text({ Size = UDim2.new(1, 0, 0, 60), Text = "ARENA", FontFace = WORDMARK, TextSize = 64, TextColor3 = COL.teal }, mark)
+	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 120), Text = "VOLLEYBALL", FontFace = WORDMARK, TextSize = 118, TextColor3 = COL.teal }, mark)
+	Menu.titlePrompt = frame({ Position = UDim2.fromOffset(600, 352), Size = UDim2.fromOffset(640, 30), BackgroundTransparency = 1 }, ts)
+	local key = frame({ AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(0.5, -48, 0.5, 0), Size = UDim2.fromOffset(22, 22), BackgroundColor3 = COL.teal }, Menu.titlePrompt)
+	round(key, 11)
+	text({ Size = UDim2.fromScale(1, 1), Text = "A", FontFace = FONT.title, TextSize = 13, TextColor3 = COL.ink }, key)
+	Menu.titlePromptText = text({ AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.5, -40, 0.5, 0), Size = UDim2.fromOffset(200, 30), Text = "PRESS ANY BUTTON", FontFace = FONT.head, TextSize = 22, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, Menu.titlePrompt)
+	Menu.titleKey = key
+	text({
+		Position = UDim2.fromOffset(600, 450),
+		Size = UDim2.fromOffset(640, 70),
+		Text = "ARENA VOLLEYBALL   ·   SEASON 1\nThis game saves your progress automatically. Please don't leave\nwhile the saving icon is showing.",
+		FontFace = FONT.head,
+		TextSize = 14,
+		LineHeight = 1.15,
+	}, ts)
+	-- the spinning loading / saving icon
+	Menu.titleSpinner = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(920, 630), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1 }, ts)
+	round(Menu.titleSpinner, 15)
+	make("UIStroke", { Color = COL.text, Thickness = 2 }, Menu.titleSpinner)
+	frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 10, 0, 2), BackgroundColor3 = COL.text }, Menu.titleSpinner)
+	Menu.titleLoaded = false
+	Menu.onShow.title = function()
+		Menu.logo.Visible = false
+		task.spawn(function()
+			task.wait(0.6)
+			Menu.titleArt.set("me", "cheer")
+		end)
+	end
+	-- loading: wait for the game's pieces (and your profile, briefly), then ask for a button
+	task.spawn(function()
+		shared:WaitForChild("MenuModel", 10)
+		local started = os.clock()
+		while not Menu.profileLoaded and os.clock() - started < 4 do
+			task.wait(0.1)
+		end
+		task.wait(0.8)
+		Menu.titleLoaded = true
+	end)
+	RunService.RenderStepped:Connect(function(dt)
+		if Menu.current ~= "title" or not Menu.gui.Enabled then
+			return
+		end
+		Menu.titleSpinner.Rotation = (Menu.titleSpinner.Rotation + dt * 240) % 360
+		local blink = Menu.titleLoaded and (0.5 + 0.5 * math.sin(os.clock() * 4)) or 0.85
+		Menu.titlePromptText.TextTransparency = 1 - blink
+		Menu.titleKey.BackgroundTransparency = 1 - blink
+		Menu.titlePromptText.Text = Menu.titleLoaded and "PRESS ANY BUTTON" or "LOADING"
+	end)
+	local function leave(input)
+		if Menu.current ~= "title" or not Menu.titleLoaded then
+			return
+		end
+		local kind = input.UserInputType
+		if kind == Enum.UserInputType.MouseMovement or kind == Enum.UserInputType.MouseWheel or input.KeyCode == Enum.KeyCode.Thumbstick1 or input.KeyCode == Enum.KeyCode.Thumbstick2 then
+			return
+		end
+		Menu.logo.Visible = true
+		Menu.show("home", false)
+	end
+	UserInputService.InputBegan:Connect(leave)
 end
 
 local function firstWord(name)
@@ -589,14 +668,20 @@ do
 
 	for i, info in {
 		{ "online", "ONLINE SEASONS", "Ranked 6v6 against other players. Win matches to climb ten divisions.", "CO-OP SEASONS", "Team up with a friend against other duos." },
-		{ "customise", "EDIT PLAYER", "Change your player's name, number and kit.", "KITS AND COURTS", "Choose home and away kits and the arena you play in." },
+		{ "customise", "EDIT PLAYER", "Your shirt number, your preferred position, and whether you wear the team kit.", "KITS AND COURTS", "Home, away and third kits for every club, and five court styles." },
 	} do
 		local page = Menu.screen(info[1])
 		Menu.frontTabs(page, i + 2)
 		for k = 0, 1 do
-			local live = info[1] == "online" and k == 0
+			local live = info[1] == "customise" or k == 0
 			local t = Menu.tile(page, UDim2.fromOffset(268 + k * 476, 202), UDim2.fromOffset(468, 398), function()
-				if live then
+				if info[1] == "customise" then
+					if k == 0 then
+						Menu.openEditPlayer()
+					else
+						Menu.openKits()
+					end
+				elseif live then
 					Menu.openOnline()
 				else
 					Menu.toast("Coming soon")
@@ -605,7 +690,7 @@ do
 			Menu.title(t, info[2 + k * 2], 36)
 			text({ Position = UDim2.fromOffset(16, 64), Size = UDim2.fromOffset(430, 60), Text = info[3 + k * 2], FontFace = FONT.head, TextSize = 17, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, t)
 			if live then
-				Menu.chip(t, "PLAY NOW", UDim2.new(0, 16, 1, -40))
+				Menu.chip(t, info[1] == "customise" and "OPEN" or "PLAY NOW", UDim2.new(0, 16, 1, -40))
 			else
 				Menu.chip(t, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
 			end

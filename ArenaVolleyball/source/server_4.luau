@@ -2,6 +2,7 @@
 ---------------------------------------------------------------- match flow
 
 local matchContext = nil -- how the current match was started (quick play, career or online)
+local courtStyle = 1
 local pausedBy = ""
 
 function currentServer()
@@ -30,7 +31,7 @@ function sendState(plr)
 				captain = teams[t].plan and index == teams[t].plan.captain and p and p.role ~= "L" or nil,
 				rot = rotationPos(s),
 				front = isFrontRow(s),
-				number = p and p.number or s.index,
+				number = (s.custom and s.custom.number) or (p and p.number) or s.index,
 				role = p and p.role or "OH",
 				ovr = p and p.ovr or 70,
 				id = s.player and s.player.UserId or 0,
@@ -71,6 +72,8 @@ function sendState(plr)
 		plans = { teams[1].plan, teams[2].plan },
 		subs = { teams[1].subs, teams[2].subs },
 		subsMax = Config.SUBS_PER_SET or 6,
+		kits = { teams[1].kitIndex, teams[2].kitIndex },
+		court = courtStyle,
 		controls = controls,
 	}
 	if plr then
@@ -160,8 +163,10 @@ function stopMatch()
 					charConnections[plr]:Disconnect()
 					charConnections[plr] = nil
 				end
-				-- forget the person's character before clearing, so it isn't destroyed
+				-- clothes back, then forget the character so it isn't destroyed
+				pcall(undressCharacter, s)
 				s.player, s.model, s.humanoid, s.root, s.align = nil, nil, nil, nil, nil
+				s.custom = nil
 				s.isAI = true
 				moveOffCourt(plr)
 			end
@@ -301,6 +306,11 @@ local function steer(slot, order, t, dt, lookAt)
 		vel = vel * (1 - math.min(dt * 2.5, 1)) -- sliding out of a dive
 	else
 		local maxSpeed = ai.speed * (mem.pace or 1)
+		-- the back row covers the most ground, so it moves quicker
+		local backRow = TEAM_SIZE == 6 and not isFrontRow(slot)
+		if backRow and not order.walk then
+			maxSpeed += 3
+		end
 		if order.sprint then
 			maxSpeed += 6
 		elseif order.run then
@@ -330,7 +340,7 @@ local function steer(slot, order, t, dt, lookAt)
 			end
 		end
 		-- accelerate towards it instead of snapping
-		local accel = grounded and ((order.sprint or order.run) and 46 or 24) or 6
+		local accel = grounded and ((order.sprint or order.run) and (backRow and 58 or 46) or (backRow and 32 or 24)) or 6
 		local change = desired - vel
 		local maxChange = accel * dt
 		if change.Magnitude > maxChange then
@@ -527,7 +537,8 @@ local function planRally(team, t, brain)
 					who.humanoid.Jump = true
 				end
 			else
-				orders[who] = { pos = stand, run = true }
+				-- a long way to go: sprint for it
+				orders[who] = { pos = stand, run = true, sprint = flatDist(who.root.Position, stand) > 7 }
 				-- dive only for a ball he can't reach by running
 				local far = flatDist(who.root.Position, cp)
 				local short = far - (ai.speed + 3) * math.max(tc - t, 0)
@@ -687,14 +698,16 @@ local function beginMatch(spec)
 			sl.override, sl.meter, sl.boost = nil, 0, nil
 		end
 	end
-	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan)
+	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan, spec.kit, spec.awayKit)
+	courtStyle = math.clamp(math.floor(tonumber(spec.court) or 1), 1, #Teams.COURTS)
+	applyCourtStyle(courtStyle)
 	pointsToWin = spec.points or Config.POINTS_TO_WIN
 	setsToWin = spec.sets or Config.SETS_TO_WIN
 	matchContext = spec
 	matchActive = true
 	phase = "setup"
 	for _, entry in spec.players do
-		local slot = addPlayer(entry.player, entry.team, entry.slot)
+		local slot = addPlayer(entry.player, entry.team, entry.slot, entry.custom)
 		if slot then
 			slot.override = entry.override
 		end
@@ -725,6 +738,14 @@ local function beginMatch(spec)
 	startMatch()
 end
 
+-- your Edit Player choices: shirt number and whether you wear the team kit
+function cleanCustom(custom)
+	if type(custom) ~= "table" then
+		return nil
+	end
+	return { number = math.clamp(math.floor(tonumber(custom.number) or 7), 1, 99), wearKit = custom.wearKit == true }
+end
+
 local function quickPlay(plr, data)
 	local count = #Teams.list
 	local home = math.clamp(math.floor(tonumber(data.home) or 1), 1, count)
@@ -735,6 +756,8 @@ local function quickPlay(plr, data)
 	local points, sets = tonumber(data.points), tonumber(data.sets)
 	beginMatch({
 		mode = "quick",
+		kit = tonumber(data.kit),
+		court = tonumber(data.court),
 		home = home,
 		away = away,
 		plan = type(data.plan) == "table" and data.plan or { lineup = data.lineup },
@@ -744,6 +767,7 @@ local function quickPlay(plr, data)
 			player = plr,
 			team = 1,
 			slot = math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE),
+			custom = cleanCustom(data.custom),
 		} },
 	})
 end
@@ -801,7 +825,7 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		if not controllers[plr] then
 			if matchActive then
-				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot))
+				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot), cleanCustom(data.custom))
 			else
 				quickPlay(plr, data)
 			end

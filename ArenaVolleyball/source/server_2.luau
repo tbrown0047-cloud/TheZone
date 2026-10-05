@@ -40,14 +40,18 @@ local function applyPlan(t)
 	team.ai = ai
 end
 
--- Picks the clubs and their game plans (lineup, tactics and roles)
-local function configureTeams(homeId, awayId, homePlan, awayPlan)
+-- Picks the clubs, their game plans (lineup, tactics and roles) and their kits
+local function configureTeams(homeId, awayId, homePlan, awayPlan, homeKit, awayKit)
+	homeKit = math.clamp(math.floor(tonumber(homeKit) or 1), 1, 3)
+	local kits = { homeKit, Teams.awayKit(homeId, homeKit, awayId, tonumber(awayKit) or 2) }
 	for t, id in { homeId, awayId } do
 		local team = teams[t]
 		team.defId = id
 		team.def = Teams.list[id]
 		team.plan = Teams.cleanPlan(id, t == 1 and homePlan or awayPlan)
 		team.subs = 0
+		team.kitIndex = kits[t]
+		team.kit = Teams.kits(id)[kits[t]]
 		applyPlan(t)
 	end
 end
@@ -222,10 +226,10 @@ local function dressBot(slot)
 	if not model then
 		return
 	end
-	local def = teams[slot.team].def
+	local kit = teams[slot.team].kit
 	local p = playerOf(slot)
 	local libero = p and p.role == "L"
-	local shirtColor = libero and def.secondary or def.primary
+	local shirtColor = libero and kit.shorts or kit.shirt
 	local colors = model:FindFirstChildOfClass("BodyColors")
 	if colors then
 		colors.TorsoColor3 = shirtColor
@@ -291,17 +295,26 @@ local function simpleBody(slot)
 	return model
 end
 
+-- puts every part of a body in its team's collision group, so teammates pass through
+local function setGroup(model, group)
+	for _, d in model:GetDescendants() do
+		if d:IsA("BasePart") then
+			d.CollisionGroup = group
+		end
+	end
+end
+
 local function makeBot(slot)
-	local def = teams[slot.team].def
+	local def = teams[slot.team].kit
 	local p = playerOf(slot)
 	local desc = Instance.new("HumanoidDescription")
 	local skin = SKIN[rng:NextInteger(1, #SKIN)]
 	desc.HeadColor = skin
 	desc.LeftArmColor = skin
 	desc.RightArmColor = skin
-	desc.TorsoColor = def.primary
-	desc.LeftLegColor = def.secondary
-	desc.RightLegColor = def.secondary
+	desc.TorsoColor = def.shirt
+	desc.LeftLegColor = def.shorts
+	desc.RightLegColor = def.shorts
 	local ok, model = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R15)
 	if not ok or not model then
 		warn("[Arena Volleyball] Using a simple AI body: " .. tostring(model))
@@ -335,9 +348,10 @@ local function makeBot(slot)
 	hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, false)
 	model:SetAttribute("VolleyballAI", true)
 	if p then
-		local light = (def.primary.R + def.primary.G + def.primary.B) > 1.8
+		local light = (def.shirt.R + def.shirt.G + def.shirt.B) > 1.8
 		addNumber(model, p.number, light and Color3.fromRGB(20, 20, 30) or Color3.new(1, 1, 1))
 	end
+	pcall(setGroup, model, TEAM_GROUPS[slot.team])
 
 	local attachment = Instance.new("Attachment")
 	attachment.Name = "FaceAttachment"
@@ -420,6 +434,71 @@ local function clearBody(slot)
 	slot.ai = {}
 end
 
+-- Your own character in your team's kit (if you chose to wear it): clothes are put
+-- away for the match and given back afterwards
+local function dressCharacter(slot, char)
+	local custom = slot.custom or {}
+	if not custom.wearKit then
+		return
+	end
+	local kit = teams[slot.team].kit
+	slot.saved = { char = char, clothes = {} }
+	for _, c in char:GetChildren() do
+		if c:IsA("Shirt") or c:IsA("Pants") or c:IsA("ShirtGraphic") then
+			table.insert(slot.saved.clothes, c)
+			c.Parent = nil
+		end
+	end
+	local colors = char:FindFirstChildOfClass("BodyColors")
+	if colors then
+		slot.saved.colors = { colors.TorsoColor3, colors.LeftLegColor3, colors.RightLegColor3 }
+		colors.TorsoColor3, colors.LeftLegColor3, colors.RightLegColor3 = kit.shirt, kit.shorts, kit.shorts
+	end
+	for _, name in { "UpperTorso", "LowerTorso", "Torso" } do
+		local part = char:FindFirstChild(name)
+		if part then
+			part.Color = kit.shirt
+		end
+	end
+	for _, name in { "LeftUpperLeg", "LeftLowerLeg", "RightUpperLeg", "RightLowerLeg", "Left Leg", "Right Leg" } do
+		local part = char:FindFirstChild(name)
+		if part then
+			part.Color = kit.shorts
+		end
+	end
+	local light = (kit.shirt.R + kit.shirt.G + kit.shirt.B) > 1.8
+	addNumber(char, custom.number or 7, light and Color3.fromRGB(20, 20, 30) or Color3.new(1, 1, 1))
+end
+
+-- gives a character its clothes and normal collisions back
+local function undressCharacter(slot)
+	if slot.groupConn then
+		slot.groupConn:Disconnect()
+		slot.groupConn = nil
+	end
+	local char = slot.player and slot.player.Character
+	if char then
+		pcall(setGroup, char, "Default")
+	end
+	local saved = slot.saved
+	slot.saved = nil
+	if not saved or not saved.char.Parent then
+		return
+	end
+	for _, d in saved.char:GetDescendants() do
+		if d:IsA("SurfaceGui") and d.Name == "ShirtNumber" then
+			d:Destroy()
+		end
+	end
+	for _, c in saved.clothes do
+		c.Parent = saved.char
+	end
+	local colors = saved.char:FindFirstChildOfClass("BodyColors")
+	if colors and saved.colors then
+		colors.TorsoColor3, colors.LeftLegColor3, colors.RightLegColor3 = saved.colors[1], saved.colors[2], saved.colors[3]
+	end
+end
+
 local function bindCharacter(slot, plr, char)
 	local hum = char:WaitForChild("Humanoid", 10)
 	local hrp = char:WaitForChild("HumanoidRootPart", 10)
@@ -427,10 +506,21 @@ local function bindCharacter(slot, plr, char)
 		return
 	end
 	slot.model, slot.humanoid, slot.root = char, hum, hrp
+	-- no bumping into teammates
+	pcall(setGroup, char, TEAM_GROUPS[slot.team])
+	if slot.groupConn then
+		slot.groupConn:Disconnect()
+	end
+	slot.groupConn = char.DescendantAdded:Connect(function(d)
+		if d:IsA("BasePart") then
+			d.CollisionGroup = TEAM_GROUPS[slot.team]
+		end
+	end)
 	task.wait(0.15)
 	if slot.player ~= plr or slot.model ~= char then
 		return
 	end
+	pcall(dressCharacter, slot, char)
 	if phase == "serve" and currentServer() == slot then
 		placeSlot(slot, serveSpot(slot))
 	else
@@ -444,7 +534,7 @@ end
 
 -- Puts a person in a slot with his own character: the one asked for if an AI has it,
 -- else the first AI slot on that team, else on the other team
-local function addPlayer(plr, wantTeam, wantIndex)
+local function addPlayer(plr, wantTeam, wantIndex, custom)
 	if slotOfPlayer[plr] then
 		return slotOfPlayer[plr]
 	end
@@ -470,6 +560,7 @@ local function addPlayer(plr, wantTeam, wantIndex)
 	clearBody(slot)
 	slot.isAI = false
 	slot.player = plr
+	slot.custom = type(custom) == "table" and custom or nil
 	slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
 	slotOfPlayer[plr] = slot
 	controllers[plr] = { team = slot.team, home = slot.index }
@@ -500,8 +591,10 @@ local function removePlayer(plr)
 		return
 	end
 	slotOfPlayer[plr] = nil
+	pcall(undressCharacter, slot)
 	slot.player = nil
 	slot.override = nil
+	slot.custom = nil
 	-- forget the character so it isn't destroyed with the body
 	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
 	slot.isAI = true

@@ -290,6 +290,67 @@ function Teams.cleanPlan(id, plan)
 	return out
 end
 
+---------------------------------------------------------------- kits, courts and perks
+
+-- Three kits per club: home, away (colours swapped) and a darker third kit
+function Teams.kits(id)
+	local d = Teams.list[id]
+	local p = d.primary
+	return {
+		{ name = "HOME", shirt = d.primary, shorts = d.secondary },
+		{ name = "AWAY", shirt = d.secondary, shorts = d.primary },
+		{ name = "THIRD", shirt = Color3.new(p.R * 0.35, p.G * 0.35, p.B * 0.35), shorts = Color3.new(math.min(p.R * 1.2, 1), math.min(p.G * 1.2, 1), math.min(p.B * 1.2, 1)) },
+	}
+end
+
+-- how alike two colours are (0 = the same)
+function Teams.colorGap(a, b)
+	return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B)
+end
+
+-- The away side's kit: the one picked, unless it clashes with the home shirt
+function Teams.awayKit(homeId, homeKit, awayId, want)
+	local homeShirt = Teams.kits(homeId)[homeKit or 1].shirt
+	local kits = Teams.kits(awayId)
+	local order = { want or 1, 1, 2, 3 }
+	for _, k in order do
+		if kits[k] and Teams.colorGap(kits[k].shirt, homeShirt) > 0.45 then
+			return k
+		end
+	end
+	return 3
+end
+
+-- Court looks: free zone, court, lines and floor material
+Teams.COURTS = {
+	{ name = "CLASSIC", free = Color3.fromRGB(34, 74, 128), court = Color3.fromRGB(214, 128, 62), lines = Color3.fromRGB(245, 245, 245), material = "SmoothPlastic" },
+	{ name = "PRO BLUE", free = Color3.fromRGB(22, 40, 92), court = Color3.fromRGB(52, 110, 200), lines = Color3.fromRGB(250, 250, 250), material = "SmoothPlastic" },
+	{ name = "HARDWOOD", free = Color3.fromRGB(150, 98, 58), court = Color3.fromRGB(214, 170, 112), lines = Color3.fromRGB(255, 255, 255), material = "WoodPlanks" },
+	{ name = "EMERALD", free = Color3.fromRGB(30, 70, 50), court = Color3.fromRGB(64, 150, 96), lines = Color3.fromRGB(240, 250, 240), material = "SmoothPlastic" },
+	{ name = "NIGHT", free = Color3.fromRGB(14, 12, 30), court = Color3.fromRGB(40, 30, 90), lines = Color3.fromRGB(94, 242, 224), material = "Glass" },
+}
+
+-- Career perks: unlocked when an attribute reaches 80
+Teams.PERKS = {
+	{ attr = "SRV", name = "CANNON", info = "Your serves travel faster" },
+	{ attr = "ATK", name = "HAMMER", info = "Your spikes are harder" },
+	{ attr = "BLK", name = "WALL", info = "Your block covers more of the net" },
+	{ attr = "REC", name = "MAGNET", info = "Cleaner passes from hard hits" },
+	{ attr = "SET", name = "MAESTRO", info = "More accurate sets" },
+	{ attr = "PHY", name = "SKY HIGH", info = "More reach for every touch" },
+}
+Teams.PERK_LEVEL = 80
+
+function Teams.perksFor(attrs)
+	local out = {}
+	for _, perk in Teams.PERKS do
+		if (attrs[perk.attr] or 0) >= Teams.PERK_LEVEL then
+			out[perk.name] = true
+		end
+	end
+	return out
+end
+
 -- League position by rating (1 = best)
 local ranks
 function Teams.rank(id)

@@ -70,6 +70,7 @@ local serveAt, serveDeadline, phaseUntil = 0, 0, 0
 local paused, pausedAt = false, 0 -- the pause menu really stops the match
 local sendState, sendBall, currentServer, setupServe, stopMatch -- defined further down
 local onMatchFinished -- career and online results, defined further down
+local cleanCustom -- Edit Player choices, defined further down
 
 ---------------------------------------------------------------- court
 
@@ -105,14 +106,15 @@ local function part(props)
 	return p
 end
 
--- floor: blue free zone around an orange court
-part({
+-- floor: blue free zone around an orange court (the look changes with Teams.COURTS)
+local courtLook = { lines = {} }
+courtLook.free = part({
 	Name = "FreeZone",
 	Size = Vector3.new(Config.COURT_WIDTH + 36, 0.4, Config.COURT_LENGTH + 46), -- 5 m at the sides, 6.5 m at the ends
 	CFrame = CFrame.new(C.X, groundY + 0.2, C.Z),
 	Color = Color3.fromRGB(34, 74, 128),
 })
-part({
+courtLook.court = part({
 	Name = "Court",
 	Size = Vector3.new(Config.COURT_WIDTH, 0.44, Config.COURT_LENGTH),
 	CFrame = CFrame.new(C.X, groundY + 0.22, C.Z),
@@ -121,7 +123,7 @@ part({
 
 local LINE = Color3.fromRGB(245, 245, 245)
 local function line(name, size, offset, transparency)
-	part({
+	courtLook.lines[#courtLook.lines + 1] = part({
 		Name = name,
 		Size = size,
 		CFrame = CFrame.new(C + offset),
@@ -239,6 +241,31 @@ do
 		light.Parent = lamp
 	end
 end
+
+-- the court style picked by whoever starts the match
+local function applyCourtStyle(index)
+	local style = Teams.COURTS[index] or Teams.COURTS[1]
+	courtLook.free.Color = style.free
+	courtLook.court.Color = style.court
+	pcall(function()
+		courtLook.court.Material = Enum.Material[style.material]
+	end)
+	for _, l in courtLook.lines do
+		l.Color = style.lines
+	end
+end
+
+-- teammates walk through each other (each team has its own collision group)
+local PhysicsService = game:GetService("PhysicsService")
+local TEAM_GROUPS = { "ArenaVolleyballHome", "ArenaVolleyballAway" }
+pcall(function()
+	for _, g in TEAM_GROUPS do
+		if not PhysicsService:IsCollisionGroupRegistered(g) then
+			PhysicsService:RegisterCollisionGroup(g)
+		end
+		PhysicsService:CollisionGroupSetCollidable(g, g, false)
+	end
+end)
 
 ---------------------------------------------------------------- shared objects for the client
 

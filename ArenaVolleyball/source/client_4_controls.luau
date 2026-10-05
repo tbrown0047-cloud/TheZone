@@ -3,6 +3,7 @@
 
 local Controls = { charging = false, chargeStart = 0, lastSend = 0, lastDive = 0, diveUntil = 0, pending = nil }
 local showPause -- the pause screen, defined with the menus
+local Cam -- the cameras, defined further down
 
 local function chargePower()
 	return math.clamp((os.clock() - Controls.chargeStart) / 1.2, 0, 1)
@@ -202,7 +203,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 	local key = input.KeyCode
-	if key == Enum.KeyCode.M or key == Enum.KeyCode.ButtonStart then
+	if key == Enum.KeyCode.G or key == Enum.KeyCode.ButtonSelect then
+		Cam.toggleFree()
+	elseif Cam.free then
+		return -- the free camera has the keys
+	elseif key == Enum.KeyCode.M or key == Enum.KeyCode.ButtonStart then
 		if showPause then
 			showPause()
 		end
@@ -238,7 +243,82 @@ HUD.diveButton.MouseButton1Down:Connect(dive)
 -- BROADCAST: a low chase camera behind your team that follows the play.
 -- BEHIND PLAYER (V): Roblox's own camera on your character, with shift lock.
 
-local Cam = { focus = nil, zoom = 1, ready = false, shakeUntil = 0, shakePower = 0, mode = nil }
+Cam = { focus = nil, zoom = 1, ready = false, shakeUntil = 0, shakePower = 0, mode = nil, free = false, yaw = 0, pitch = -0.3, look = Vector2.zero, freePos = nil }
+
+-- FREE CAM (G): fly the camera anywhere. W A S D move, Q / E down and up, hold the right
+-- mouse button (or use the right stick) to look, Shift to go faster. Your player stands still.
+local function setCharacterControls(enabled)
+	pcall(function()
+		local module = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
+		local controls = module:GetControls()
+		if enabled then
+			controls:Enable()
+		else
+			controls:Disable()
+		end
+	end)
+end
+
+function Cam.toggleFree()
+	if inMenu then
+		return
+	end
+	Cam.free = not Cam.free
+	if Cam.free then
+		local cf = workspace.CurrentCamera.CFrame
+		Cam.freePos = cf.Position
+		local look = cf.LookVector
+		Cam.yaw = math.atan2(-look.X, -look.Z)
+		Cam.pitch = math.asin(math.clamp(look.Y, -1, 1))
+		HUD.flash("FREE CAM  ·  G TO RETURN", COL.teal)
+	else
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		Cam.mode = nil
+	end
+	task.spawn(setCharacterControls, not Cam.free and not state.paused)
+end
+
+UserInputService.InputChanged:Connect(function(input)
+	if not Cam.free then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseMovement and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+		Cam.yaw -= input.Delta.X * 0.004
+		Cam.pitch = math.clamp(Cam.pitch - input.Delta.Y * 0.004, -1.45, 1.45)
+	elseif input.KeyCode == Enum.KeyCode.Thumbstick2 then
+		Cam.look = Vector2.new(input.Position.X, input.Position.Y)
+	elseif input.KeyCode == Enum.KeyCode.Thumbstick1 then
+		Cam.stick = Vector2.new(input.Position.X, input.Position.Y)
+	end
+end)
+
+local function updateFree(dt)
+	local cam = workspace.CurrentCamera
+	cam.CameraType = Enum.CameraType.Scriptable
+	UserInputService.MouseBehavior = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) and Enum.MouseBehavior.LockCurrentPosition or Enum.MouseBehavior.Default
+	if Cam.look.Magnitude > 0.15 then
+		Cam.yaw -= Cam.look.X * dt * 2.2
+		Cam.pitch = math.clamp(Cam.pitch + Cam.look.Y * dt * 1.6, -1.45, 1.45)
+	end
+	local rot = CFrame.Angles(0, Cam.yaw, 0) * CFrame.Angles(Cam.pitch, 0, 0)
+	local move = Vector3.zero
+	local function down(k)
+		return UserInputService:IsKeyDown(k)
+	end
+	if down(Enum.KeyCode.W) then move += Vector3.new(0, 0, -1) end
+	if down(Enum.KeyCode.S) then move += Vector3.new(0, 0, 1) end
+	if down(Enum.KeyCode.A) then move += Vector3.new(-1, 0, 0) end
+	if down(Enum.KeyCode.D) then move += Vector3.new(1, 0, 0) end
+	if down(Enum.KeyCode.E) or down(Enum.KeyCode.ButtonR1) then move += Vector3.new(0, 1, 0) end
+	if down(Enum.KeyCode.Q) or down(Enum.KeyCode.ButtonL1) then move += Vector3.new(0, -1, 0) end
+	if Cam.stick and Cam.stick.Magnitude > 0.15 then
+		move += Vector3.new(Cam.stick.X, 0, -Cam.stick.Y)
+	end
+	local speed = (down(Enum.KeyCode.LeftShift) and 70 or 26) * dt
+	Cam.freePos += rot:VectorToWorldSpace(move) * speed
+	cam.FieldOfView = 70
+	cam.CFrame = CFrame.new(Cam.freePos) * rot
+end
 
 function Cam.shake(power, seconds)
 	Cam.shakePower = math.max(Cam.shakePower, power)
@@ -255,7 +335,12 @@ UserInputService.InputChanged:Connect(function(input, processed)
 end)
 
 function Cam.update(dt, ballPos)
+	if Cam.free and not inMenu then
+		updateFree(dt)
+		return
+	end
 	if inMenu then
+		Cam.free = false
 		Cam.mode = nil
 		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
 		return
@@ -329,6 +414,7 @@ local function updatePrompts()
 	else
 		HUD.setPrompts({
 			{ pad and "START" or "M", "Pause" },
+			{ pad and "BACK" or "G", "Free cam" },
 			{ "V", settings.camera == "player" and "Broadcast camera" or "Behind-player camera" },
 			settings.camera == "player" and { "SHIFT", "Shift lock" } or nil,
 		})

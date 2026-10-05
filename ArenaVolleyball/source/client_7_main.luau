@@ -275,6 +275,8 @@ RunService.RenderStepped:Connect(function(dt)
 	if not inMenu then
 		updatePrompts()
 		HUD.update(t, pos)
+		-- the pause screen steps aside while you fly the free camera
+		Menu.pause.Visible = state.paused == true and myTeam() ~= 0 and not Cam.free
 	end
 end)
 
@@ -285,5 +287,5 @@ end)
 
 ---------------------------------------------------------------- start in the main menu
 
-openMenu("home")
+openMenu("title")
 remote:FireServer("sync")

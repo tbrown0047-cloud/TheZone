@@ -46,9 +46,13 @@ def run_checks():
     prelude = (test("test_prelude.luau") + skill + "local Teams = (function()\n" + read("Teams.luau") + "\nend)()\n"
                + read("server_2.luau") + read("server_3.luau"))
     ai_part = read("server_4.luau").split("-" * 64 + " starting and joining from the menu")[0]
+    server_5 = read("server_5.luau")
+    league = server_5[server_5.index("-" * 64 + " the league"):server_5.index("-" * 64 + " online seasons")]
     suites = {
         "ball and rules": prelude + test("test_body.luau"),
         "AI vs AI matches": prelude + ai_part + test("sim_body.luau"),
+        "career seasons": (test("test_prelude.luau") + "local Teams = (function()\n" + read("Teams.luau") + "\nend)()\n"
+                           + test("career_stubs.luau") + league + test("career_body.luau")),
     }
     for title, code in suites.items():
         path = tmp / "suite.luau"

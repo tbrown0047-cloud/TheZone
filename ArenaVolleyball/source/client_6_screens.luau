@@ -221,6 +221,7 @@ function Menu.playAs()
 		Menu.toast("Put him in the starting six first")
 	elseif editable or state.active then
 		sel.slot = slot
+		sel.slotPicked = true
 		local p = Teams.squad(teamId)[Menu.squadSel]
 		Menu.toast("You'll play as " .. p.last .. " (" .. Teams.ROLES[p.role] .. ")")
 	end
@@ -732,6 +733,7 @@ do
 		{ "Ability  /  call quick set", "R  /  F", "Y  /  UP", "POWER" },
 		{ "Serve: hold, let go in the green", "HOLD CLICK", "HOLD R2", "HOLD HIT" },
 		{ "Camera  /  shift lock", "V  /  SHIFT", "", "" },
+		{ "Free cam (fly with W A S D, Q / E)", "G", "BACK", "" },
 		{ "Pause", "M", "START", "" },
 	}
 	for k, title in { "KEYBOARD", "GAMEPAD", "TOUCH" } do
@@ -807,7 +809,20 @@ function Menu.startMatch()
 	end
 	Menu.waiting = true
 	Menu.loading.Visible = true
+	-- unless you picked someone with P, you play your preferred position
+	if not sel.slotPicked and not state.active then
+		local squad = Teams.squad(sel.home)
+		for slot, index in sel.plan.lineup do
+			if squad[index].role == Menu.custom.role then
+				sel.slot = slot
+				break
+			end
+		end
+	end
 	remote:FireServer("start", {
+		kit = Menu.custom.kits[tostring(sel.home)] or 1,
+		court = Menu.custom.court,
+		custom = { number = Menu.custom.number, wearKit = Menu.custom.wearKit },
 		home = sel.home,
 		away = sel.away,
 		plan = sel.plan,
@@ -954,7 +969,7 @@ end
 -- pause screen: stops the match for everyone in it
 do
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, matchLayer)
-	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 490), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
+	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 554), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSED", FontFace = FONT.title, TextSize = 32, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
 	Menu.pauseBy = text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
@@ -971,6 +986,9 @@ do
 		end },
 		{ "CAMERA AND DISPLAY", function()
 			Menu.openMatchSettings()
+		end },
+		{ "FREE CAM", function()
+			Cam.toggleFree()
 		end },
 		{ "QUIT TO MAIN MENU", function()
 			remote:FireServer("pause", { on = false })
@@ -995,7 +1013,7 @@ end
 local wasPaused = false
 function Menu.syncPause()
 	local show = state.paused == true and not inMenu and myTeam() ~= 0
-	Menu.pause.Visible = show
+	Menu.pause.Visible = show and not Cam.free
 	if not show then
 		Menu.subsShade.Visible = false
 		Menu.tacticsShade.Visible = false
