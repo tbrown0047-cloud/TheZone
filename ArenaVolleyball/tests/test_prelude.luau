@@ -72,3 +72,6 @@ matchActive = true
 Enum = { Material = { Air = "Air" } }
 CFrame = { lookAt = function(p) return { Position = p } end }
 serveAt, serveDeadline = 0, 0
+task = { defer = function(f, ...) f(...) end, spawn = function(f, ...) f(...) end, delay = function() end }
+function updateScoreboards() end
+function dressStadium() end

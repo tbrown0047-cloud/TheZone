@@ -355,6 +355,19 @@ local function nextTouchNo(team)
 	return 1
 end
 
+-- The deciding set (the fifth in best of five, the third in best of three) is played to 15
+local function setTarget()
+	if practice then
+		return math.huge -- practice never ends
+	end
+	if setsToWin > 1 and teams[1].sets == setsToWin - 1 and teams[2].sets == setsToWin - 1 then
+		return math.min(pointsToWin, 15)
+	end
+	return pointsToWin
+end
+
+local afterPoint -- timeouts, defined with the match flow
+
 local function awardPoint(winner, reason)
 	if not ball.live then
 		return
@@ -362,11 +375,28 @@ local function awardPoint(winner, reason)
 	ball.live = false
 	local w, l = teams[winner], teams[3 - winner]
 	w.score += 1
+	w.run = (w.run or 0) + 1
+	l.run = 0
+	-- practice drills keep count
+	if practice then
+		if ball.practiceServe then
+			practice.made += reason == "ACE" and 1 or 0
+			ball.practiceServe = false
+		end
+		if practice.drill == "ATTACK" and reason == "KILL" and ball.lastSlot and ball.lastSlot.player then
+			practice.made += 1
+		end
+	end
 	if servingTeam ~= winner then
 		servingTeam = winner
 		w.serveIndex = w.serveIndex % TEAM_SIZE + 1
 	end
-	if w.score >= pointsToWin and w.score - l.score >= Config.WIN_BY then
+	if w.score >= setTarget() and w.score - l.score >= Config.WIN_BY then
+		-- keep the set's score for the scoreboard
+		w.setScores = w.setScores or {}
+		l.setScores = l.setScores or {}
+		table.insert(w.setScores, w.score)
+		table.insert(l.setScores, l.score)
 		w.sets += 1
 		if w.sets >= setsToWin then
 			phase, phaseUntil = "matchover", now() + 9
@@ -375,9 +405,15 @@ local function awardPoint(winner, reason)
 			phase, phaseUntil = "setover", now() + 5
 			banner(teams[winner].def.name .. " TAKE THE SET", w.score .. " - " .. l.score, winner)
 		end
+		if afterPoint then
+			afterPoint(winner, true)
+		end
 	else
 		phase, phaseUntil = "point", now() + 3.4
 		banner(teams[winner].def.short .. " POINT", reason, winner)
+		if afterPoint then
+			afterPoint(winner)
+		end
 	end
 	sendState()
 end
@@ -486,12 +522,35 @@ local function touch(slot, kind, p, t, aim, q)
 		awardPoint(3 - team, "FOUR HITS")
 		return false
 	end
+	-- the serve can't be attacked or blocked straight back from in front of the 3 m line
+	if TEAM_SIZE == 6 and (kind == "spike" or kind == "tip") and n == 1 and ball.lastKind == "serve" and p.Y > GY + NET_H and (p.Z - C.Z) * side(team) < Config.COURT_LENGTH / 6 then
+		awardPoint(3 - team, "ATTACKING THE SERVE")
+		return false
+	end
+	-- a badly timed set by a person is a double contact
+	if kind == "set" and not slot.isAI and q < 0.2 then
+		awardPoint(3 - team, "DOUBLE CONTACT")
+		return false
+	end
 	-- rotation rules: back-row players attack from behind the 3 m line, the libero never above the net
 	if TEAM_SIZE == 6 and kind == "spike" and p.Y > GY + NET_H then
 		local libero = roleOf(slot) == "L"
 		if libero or (not isFrontRow(slot) and (p.Z - C.Z) * side(team) < Config.COURT_LENGTH / 6) then
 			awardPoint(3 - team, libero and "LIBERO ATTACK" or "BACK-ROW ATTACK")
 			return false
+		end
+	end
+	-- practice drills keep count
+	if practice then
+		if ball.practiceServe and team ~= ball.lastTeam then
+			practice.made += 1 -- the serve was in and they had to play it
+			ball.practiceServe = false
+		end
+		if slot.player and practice.drill == "RECEIVE" and n == 1 and ball.lastKind == "serve" then
+			practice.attempts += 1
+			practice.made += q >= 0.7 and 1 or 0
+		elseif slot.player and practice.drill == "ATTACK" and kind == "spike" then
+			practice.attempts += 1
 		end
 	end
 	local v, shot, power = shotFor(slot, kind, p, aim, q, n)
@@ -713,6 +772,10 @@ local function doServe(slot, aim, power, airborne, rootPos)
 	ball.lastTeam, ball.lastSlot, ball.lastKind, ball.touches = team, slot, "serve", 0
 	ball.holder = nil
 	phase = "rally"
+	if practice and practice.drill == "SERVE" and slot.player then
+		practice.attempts += 1
+		ball.practiceServe = true
+	end
 	launch(p, v, now())
 	ball.power = ace
 	act(slot, airborne and "jumpserve" or "serve")

@@ -449,6 +449,7 @@ local state = {
 local ballState = { id = 0, mode = "hidden", p0 = C, v0 = Vector3.zero, t0 = 0, rest = C }
 local lastTouch = { team = 0, index = 0 } -- who played the ball last, for the HUD
 
+local Crowd -- the fans, animated in the main loop
 local inMenu = true
 local openMenu, closeMenu -- defined with the menus
 

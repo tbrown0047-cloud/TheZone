@@ -673,9 +673,10 @@ end
 
 local CONTROL_ROWS = {
 	{ "Camera", function()
-		return settings.camera == "broadcast" and "BROADCAST" or "BEHIND PLAYER"
-	end, function()
-		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
+		return Cam.NAMES[settings.camera] or "BROADCAST"
+	end, function(d)
+		local i = table.find(Cam.LIST, settings.camera) or 1
+		settings.camera = Cam.LIST[(i - 1 + d) % #Cam.LIST + 1]
 	end },
 	{ "Aim marker", function()
 		return settings.aimMarker and "ON" or "OFF"
@@ -732,7 +733,7 @@ do
 		{ "Dive", "Q or C", "B", "DIVE" },
 		{ "Ability  /  call quick set", "R  /  F", "Y  /  UP", "POWER" },
 		{ "Serve: hold, let go in the green", "HOLD CLICK", "HOLD R2", "HOLD HIT" },
-		{ "Camera  /  shift lock", "V  /  SHIFT", "", "" },
+		{ "Change camera  /  shift lock", "V  /  SHIFT", "DOWN", "" },
 		{ "Free cam (fly with W A S D, Q / E)", "G", "BACK", "" },
 		{ "Pause", "M", "START", "" },
 	}
@@ -803,7 +804,7 @@ do
 	end)
 end
 
-function Menu.startMatch()
+function Menu.startMatch(extra)
 	if Menu.waiting then
 		return
 	end
@@ -831,6 +832,8 @@ function Menu.startMatch()
 		points = sel.points,
 		sets = sel.sets,
 		team = sel.side,
+		mode = extra and extra.mode or nil,
+		drill = extra and extra.drill or nil,
 	})
 	task.delay(15, function()
 		if Menu.waiting and inMenu then
@@ -969,7 +972,7 @@ end
 -- pause screen: stops the match for everyone in it
 do
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, matchLayer)
-	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 554), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
+	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 682), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSED", FontFace = FONT.title, TextSize = 32, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
 	Menu.pauseBy = text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
@@ -979,6 +982,13 @@ do
 		end },
 		{ "TACTICS", function()
 			Menu.openMatchTactics()
+		end },
+		{ "MATCH STATS", function()
+			Menu.openMatchStats()
+		end },
+		{ "CALL TIMEOUT", function()
+			remote:FireServer("timeout", {})
+			remote:FireServer("pause", { on = false })
 		end },
 		{ "SUBSTITUTIONS", function()
 			Menu.subOut = nil
@@ -1018,6 +1028,9 @@ function Menu.syncPause()
 		Menu.subsShade.Visible = false
 		Menu.tacticsShade.Visible = false
 		Menu.matchSettingsShade.Visible = false
+		if Menu.statsMatchShade then
+			Menu.statsMatchShade.Visible = false
+		end
 	elseif Menu.subsShade.Visible then
 		Menu.openSubs() -- keep the bench up to date
 	end
@@ -1039,6 +1052,11 @@ function openMenu(screenName)
 	Menu.subsShade.Visible = false
 	Menu.tacticsShade.Visible = false
 	Menu.matchSettingsShade.Visible = false
+	if Menu.statsMatchShade then
+		Menu.statsMatchShade.Visible = false
+		Menu.lineups.Visible = false
+		Menu.fullTime.Visible = false
+	end
 	HUD.gui.Enabled = false
 	HUD.touchGui.Enabled = false
 	Menu.gui.Enabled = true
@@ -1067,4 +1085,143 @@ function closeMenu()
 	Cam.mode = nil
 	Stamina.value = 100
 	HUD.refresh()
+end
+
+---------------------------------------------------------------- in-match extras: line-ups, match stats, full time
+
+-- the starting six for both teams before the first serve
+do
+	local holder = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(820, 400), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.12, Visible = false, ZIndex = 15 }, matchLayer)
+	outline(holder, COL.line, 1, 0.3)
+	frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.teal, ZIndex = 16 }, holder)
+	Menu.lineupBody = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 16 }, holder)
+	Menu.lineups = holder
+end
+
+function Menu.showLineups()
+	local body = Menu.lineupBody
+	body:ClearAllChildren()
+	text({ Position = UDim2.fromOffset(0, 14), Size = UDim2.new(1, 0, 0, 30), Text = state.practice and "PRACTICE ARENA" or "STARTING LINE-UPS", FontFace = FONT.title, TextSize = 26, TextColor3 = COL.cyan }, body)
+	for team = 1, 2 do
+		local x = team == 1 and 30 or 430
+		local def = teamDef(team)
+		badge(body, state.teamIds[team], 50, UDim2.fromOffset(x, 56))
+		text({ Position = UDim2.fromOffset(x + 62, 60), Size = UDim2.fromOffset(300, 24), Text = def.name, FontFace = FONT.title, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Left }, body)
+		local tactics = state.plans and state.plans[team] and state.plans[team].tactics
+		text({ Position = UDim2.fromOffset(x + 62, 84), Size = UDim2.fromOffset(300, 18), Text = tactics and (tactics.tempo .. " TEMPO  ·  " .. tactics.serve .. " SERVES") or "", FontFace = FONT.head, TextSize = 13, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, body)
+		for i, e in state.roster[team] or {} do
+			local y = 118 + (i - 1) * 42
+			frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(360, 38), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.6 or 0.8 }, body)
+			shirt(body, def.primary, e.number, 30, UDim2.fromOffset(x + 22, y + 19))
+			text({ Position = UDim2.fromOffset(x + 46, y), Size = UDim2.fromOffset(200, 38), Text = e.name .. (e.captain and "  (C)" or ""), FontFace = FONT.title, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = e.id ~= 0 and COL.gold or COL.text }, body)
+			text({ Position = UDim2.fromOffset(x + 250, y), Size = UDim2.fromOffset(50, 38), Text = e.role, FontFace = FONT.title, TextSize = 14, TextColor3 = COL.teal }, body)
+			text({ Position = UDim2.fromOffset(x + 300, y), Size = UDim2.fromOffset(50, 38), Text = tostring(e.ovr), FontFace = FONT.num, TextSize = 18, TextColor3 = ratingColor(e.ovr) }, body)
+		end
+	end
+	zify(body, 17)
+	Menu.lineups.Visible = true
+	task.delay(4.5, function()
+		Menu.lineups.Visible = false
+	end)
+end
+
+-- match stats: team totals and your team's players
+do
+	local shade, body = modal(matchLayer, "MATCH STATS", 760, 560, 30)
+	Menu.statsMatchShade, Menu.statsMatchBody = shade, body
+end
+
+function Menu.openMatchStats()
+	local body = Menu.statsMatchBody
+	body:ClearAllChildren()
+	local totals = { {}, {} }
+	for team = 1, 2 do
+		local t = { k = 0, a = 0, b = 0, d = 0 }
+		for _, e in state.roster[team] or {} do
+			t.k += e.k or 0
+			t.a += e.a or 0
+			t.b += e.b or 0
+			t.d += e.d or 0
+		end
+		totals[team] = t
+	end
+	text({ Size = UDim2.new(1, 0, 0, 26), Text = teamDef(1).short .. "   " .. state.score[1] .. " - " .. state.score[2] .. "   " .. teamDef(2).short, FontFace = FONT.title, TextSize = 22 }, body)
+	for i, row in { { "k", "KILLS" }, { "a", "ACES" }, { "b", "BLOCKS" }, { "d", "DIGS" } } do
+		local y = 36 + (i - 1) * 32
+		local a, b = totals[1][row[1]], totals[2][row[1]]
+		text({ Position = UDim2.fromOffset(120, y), Size = UDim2.fromOffset(60, 28), Text = tostring(a), FontFace = FONT.num, TextSize = 20 }, body)
+		text({ Position = UDim2.fromOffset(290, y), Size = UDim2.fromOffset(130, 28), Text = row[2], FontFace = FONT.head, TextSize = 15 }, body)
+		text({ Position = UDim2.fromOffset(530, y), Size = UDim2.fromOffset(60, 28), Text = tostring(b), FontFace = FONT.num, TextSize = 20 }, body)
+		local back = frame({ Position = UDim2.fromOffset(190, y + 12), Size = UDim2.fromOffset(330, 5), BackgroundColor3 = COL.panel }, body)
+		local share = a / math.max(a + b, 1)
+		frame({ Size = UDim2.fromScale(share, 1), BackgroundColor3 = teamDef(1).primary }, back)
+		frame({ AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.fromScale(1 - share, 1), BackgroundColor3 = teamDef(2).primary }, back)
+	end
+	local team = myTeam()
+	if team ~= 0 then
+		local headers = { { "PLAYER", 0 }, { "POS", 300 }, { "K", 380 }, { "A", 440 }, { "B", 500 }, { "D", 560 } }
+		for _, h in headers do
+			text({ Position = UDim2.fromOffset(h[2] + 10, 172), Size = UDim2.fromOffset(60, 18), Text = h[1], FontFace = FONT.title, TextSize = 12, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, body)
+		end
+		for i, e in state.roster[team] or {} do
+			local y = 192 + (i - 1) * 32
+			frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
+			for k, value in { "#" .. e.number .. "  " .. e.name, e.role, e.k or 0, e.a or 0, e.b or 0, e.d or 0 } do
+				text({ Position = UDim2.fromOffset(headers[k][2] + 10, y), Size = UDim2.fromOffset(k == 1 and 280 or 50, 30), Text = tostring(value), FontFace = k == 1 and FONT.title or FONT.num, TextSize = 15, TextColor3 = e.id ~= 0 and COL.gold or COL.text, TextXAlignment = Enum.TextXAlignment.Left }, body)
+			end
+		end
+	end
+	zify(body, 33)
+	Menu.statsMatchShade.Visible = true
+end
+
+-- full time: the result, set by set, and the best players
+do
+	local holder = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromOffset(700, 330), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.08, Visible = false, ZIndex = 15 }, matchLayer)
+	outline(holder, COL.line, 1, 0.3)
+	frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.gold, ZIndex = 16 }, holder)
+	Menu.fullTimeBody = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 16 }, holder)
+	Menu.fullTime = holder
+end
+
+function Menu.showFullTime()
+	local body = Menu.fullTimeBody
+	body:ClearAllChildren()
+	local winner = state.sets[1] > state.sets[2] and 1 or 2
+	text({ Position = UDim2.fromOffset(0, 14), Size = UDim2.new(1, 0, 0, 30), Text = "FULL TIME", FontFace = FONT.title, TextSize = 28, TextColor3 = COL.gold }, body)
+	for team = 1, 2 do
+		local x = team == 1 and 140 or 560
+		badge(body, state.teamIds[team], 64, UDim2.fromOffset(x, 56), Vector2.new(0.5, 0))
+		text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(x, 124), Size = UDim2.fromOffset(240, 22), Text = teamDef(team).name, FontFace = FONT.title, TextSize = 17, TextColor3 = team == winner and COL.text or COL.dim }, body)
+	end
+	local multi = (state.setsToWin or 1) > 1
+	text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(350, 60), Size = UDim2.fromOffset(240, 60), Text = multi and (state.sets[1] .. " - " .. state.sets[2]) or (state.score[1] .. " - " .. state.score[2]), FontFace = FONT.num, TextSize = 56 }, body)
+	local sets = {}
+	local a, b = state.setScores and state.setScores[1] or {}, state.setScores and state.setScores[2] or {}
+	for i = 1, #a do
+		table.insert(sets, a[i] .. "-" .. (b[i] or 0))
+	end
+	text({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(350, 124), Size = UDim2.fromOffset(300, 20), Text = #sets > 0 and table.concat(sets, "   ") or "", FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim }, body)
+	-- the best players: kills, aces and blocks count most, then digs
+	local best = {}
+	for team = 1, 2 do
+		for _, e in state.roster[team] or {} do
+			table.insert(best, { e = e, team = team, score = (e.k or 0) * 3 + (e.a or 0) * 4 + (e.b or 0) * 3 + (e.d or 0) })
+		end
+	end
+	table.sort(best, function(x, y)
+		return x.score > y.score
+	end)
+	text({ Position = UDim2.fromOffset(0, 162), Size = UDim2.new(1, 0, 0, 22), Text = "TOP PERFORMERS", FontFace = FONT.title, TextSize = 16, TextColor3 = COL.teal }, body)
+	for i = 1, math.min(3, #best) do
+		local item = best[i]
+		local e = item.e
+		local y = 192 + (i - 1) * 40
+		frame({ Position = UDim2.fromOffset(40, y), Size = UDim2.fromOffset(620, 36), BackgroundColor3 = i == 1 and COL.gold or COL.panelHi, BackgroundTransparency = i == 1 and 0.75 or 0.8 }, body)
+		text({ Position = UDim2.fromOffset(52, y), Size = UDim2.fromOffset(60, 36), Text = i == 1 and "MVP" or ("#" .. i), FontFace = FONT.title, TextSize = 15, TextColor3 = i == 1 and COL.gold or COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, body)
+		text({ Position = UDim2.fromOffset(112, y), Size = UDim2.fromOffset(300, 36), Text = e.name .. "  ·  " .. teamDef(item.team).short .. " " .. e.role, FontFace = FONT.title, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left }, body)
+		text({ Position = UDim2.fromOffset(400, y), Size = UDim2.fromOffset(250, 36), Text = string.format("%d K   %d A   %d B   %d D", e.k or 0, e.a or 0, e.b or 0, e.d or 0), FontFace = FONT.num, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Right }, body)
+	end
+	zify(body, 17)
+	Menu.fullTime.Visible = true
 end

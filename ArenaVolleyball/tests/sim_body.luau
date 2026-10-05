@@ -133,3 +133,29 @@ end
 print(string.format("average touches per rally %.1f; AI players moved %.0f studs per point on average", total / math.max(#rallyTouches, 1), travelled / math.max(banners, 1) / 12))
 print("final phase: " .. phase .. "  active " .. tostring(matchActive))
 
+
+-- practice drills with a person who never plays the ball: they must keep cycling without errors
+for _, drill in { "ATTACK", "SERVE", "RECEIVE", "FREE" } do
+	configureTeams(3, 4)
+	giveBodies()
+	local me = teams[1].slots[2]
+	me.player, me.isAI = { UserId = 1, DisplayName = "Tester" }, false
+	practice = { drill = drill, attempts = 0, made = 0 }
+	matchActive = true
+	startMatch()
+	local limit = CLOCK + 90
+	while matchActive and CLOCK < limit do
+		CLOCK += dt
+		stepBodies(dt)
+		stepBall(CLOCK)
+		updateMatch(CLOCK)
+		if matchActive then
+			aiTeam(1, CLOCK, dt)
+			aiTeam(2, CLOCK, dt)
+			flushTouches()
+		end
+	end
+	print(string.format("practice %-7s: score %d-%d after 90 s, %d/%d, still running: %s", drill, teams[1].score, teams[2].score, practice.made, practice.attempts, tostring(matchActive)))
+	me.player, me.isAI = nil, true
+	practice = nil
+end

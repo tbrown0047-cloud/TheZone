@@ -368,7 +368,15 @@ local function makeBot(slot)
 	slot.model, slot.humanoid, slot.root, slot.align = model, hum, hrp, align
 	dressBot(slot)
 	-- everyone moves a little differently
-	slot.ai = { vel = Vector3.zero, pace = rng:NextNumber(0.88, 1.12), drift = rng:NextNumber(0, 10) }
+	-- everyone moves a little differently: reaction, pace, acceleration, how they walk
+	slot.ai = {
+		vel = Vector3.zero,
+		pace = rng:NextNumber(0.88, 1.12),
+		drift = rng:NextNumber(0, 10),
+		reactBase = rng:NextNumber(0, 0.16),
+		accelMul = rng:NextNumber(0.82, 1.2),
+		walkMul = rng:NextNumber(0.78, 1.18),
+	}
 	model.Parent = courtFolder
 	if phase == "serve" and currentServer() == slot then
 		placeSlot(slot, serveSpot(slot))

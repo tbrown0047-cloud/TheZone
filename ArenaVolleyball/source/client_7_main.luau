@@ -84,13 +84,28 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 			closeMenu()
 		elseif not inMenu and not me then
 			-- full time, or you were taken out of the match: back to the hub you came from
-			local back = Menu.lastMode == "career" and "career" or Menu.lastMode == "online" and "onlinehub" or "home"
+			local back = Menu.lastMode == "career" and "career" or Menu.lastMode == "online" and "onlinehub" or Menu.lastMode == "practice" and "practice" or "home"
 			Menu.lastMode = nil
 			openMenu(back)
 			local last = history[#history]
 			if last and not a.active then
 				Menu.toast(string.format("FULL TIME   %s %s %s", Teams.list[last.home].short, last.score, Teams.list[last.away].short))
 			end
+		end
+		-- the line-ups before the first serve, and the full-time summary
+		if me and not inMenu then
+			local fresh = a.phase == "serve" and a.score[1] + a.score[2] == 0 and a.sets[1] + a.sets[2] == 0
+			if fresh and not Menu.introShown then
+				Menu.introShown = true
+				Menu.showLineups()
+			end
+			if a.phase == "matchover" and not Menu.fullTimeShown then
+				Menu.fullTimeShown = true
+				Menu.showFullTime()
+			end
+		end
+		if not a.active then
+			Menu.introShown, Menu.fullTimeShown = false, false
 		end
 		if inMenu and (Menu.current == "teams" or Menu.current == "preview") then
 			-- someone else may have started a match: show it
@@ -154,6 +169,8 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		elseif a == "land" then
 			ripple(b, (c and c.inside) and Color3.new(1, 1, 1) or Color3.fromRGB(255, 110, 90))
 		end
+	elseif kind == "crowd" then
+		Crowd.cheer(b and 0.75 or 0.4)
 	elseif kind == "miss" then
 		HUD.flash("MISSED", COL.dim)
 	elseif kind == "called" then
@@ -185,6 +202,65 @@ shared.ChildAdded:Connect(function(child)
 	end
 end)
 
+---------------------------------------------------------------- the crowd (animated on your screen only)
+
+Crowd = { jumping = {}, fans = nil }
+function Crowd.list()
+	if not Crowd.fans then
+		local court = workspace:FindFirstChild("VolleyballCourt")
+		local stadium = court and court:FindFirstChild("Stadium")
+		local folder = stadium and stadium:FindFirstChild("Crowd")
+		if folder then
+			Crowd.fans = folder:GetChildren()
+		end
+	end
+	return Crowd.fans or {}
+end
+
+-- a share of the fans jump up and down
+function Crowd.cheer(share)
+	local now = os.clock()
+	for _, fan in Crowd.list() do
+		if math.random() < share then
+			Crowd.jumping[fan] = { t0 = now + math.random() * 0.4, hops = math.random(1, 3), base = fan:GetAttribute("BaseY") or fan.Position.Y }
+		end
+	end
+end
+
+function Crowd.update()
+	local now = os.clock()
+	for fan, j in Crowd.jumping do
+		local tau = now - j.t0
+		if tau >= 0 then
+			local hop = tau / 0.45
+			local y = j.base
+			if hop >= j.hops then
+				Crowd.jumping[fan] = nil
+			else
+				y += math.sin((hop % 1) * math.pi) * 1.1
+			end
+			if fan.Parent then
+				local cf = fan.CFrame
+				fan.CFrame = cf + Vector3.new(0, y - cf.Position.Y, 0)
+				local head = fan:FindFirstChild("Head")
+				if head then
+					head.CFrame = fan.CFrame * CFrame.new(0, 1.55, 0)
+				end
+			end
+		end
+	end
+end
+
+-- now and then a few fans stand up and wave while the ball is in play
+task.spawn(function()
+	while true do
+		task.wait(2)
+		if not inMenu and state.active and state.phase == "rally" then
+			Crowd.cheer(0.04)
+		end
+	end
+end)
+
 ---------------------------------------------------------------- every frame
 
 -- poses go on after the normal animations each frame
@@ -194,6 +270,7 @@ end)
 
 local spin = 0
 RunService.RenderStepped:Connect(function(dt)
+	Crowd.update()
 	local t = serverNow()
 	local pos = ballAt(t)
 	local hidden = ballState.mode == "hidden"

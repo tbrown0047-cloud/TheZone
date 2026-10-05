@@ -94,9 +94,18 @@ function Menu.show(name, push)
 	for n, f in Menu.screens do
 		f.Visible = n == name
 	end
+	local changed = Menu.current ~= name
 	Menu.current = name
-	if Menu.cover then
-		Menu.cover.vp.Visible = FRONT[name] == true
+	if Menu.profileCard then
+		Menu.profileCard.Visible = FRONT[name] == true
+		if FRONT[name] and Menu.refreshProfileCard then
+			Menu.refreshProfileCard()
+		end
+	end
+	-- a quick fade between screens
+	if changed and Menu.fader then
+		Menu.fader.BackgroundTransparency = 0.35
+		TweenService:Create(Menu.fader, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundTransparency = 1 }):Play()
 	end
 	local hook = Menu.onShow[name]
 	if hook then
@@ -279,127 +288,36 @@ end
 
 ---------------------------------------------------------------- 3D players in the menus
 
--- strips scripts and sounds from a copied character and stands it still
-local function prepareModel(model)
-	for _, d in model:GetDescendants() do
-		if d:IsA("BaseScript") or d:IsA("ModuleScript") or d:IsA("Sound") or d:IsA("ForceField") or d:IsA("BillboardGui") then
-			d:Destroy()
-		end
-	end
-	local hrp = model:FindFirstChild("HumanoidRootPart")
-	if hrp then
-		hrp.Anchored = true
-	end
-	return model:FindFirstChildOfClass("Humanoid"), hrp
-end
-
--- dresses a plain body in a club kit with a shirt number
-local function dressKit(model, teamId, number)
-	local def = Teams.list[teamId]
-	for _, c in model:GetChildren() do
-		if c:IsA("Shirt") or c:IsA("Pants") or c:IsA("ShirtGraphic") then
-			c:Destroy()
-		end
-	end
-	local colors = model:FindFirstChildOfClass("BodyColors")
-	if colors then
-		colors.TorsoColor3 = def.primary
-		colors.LeftLegColor3 = def.secondary
-		colors.RightLegColor3 = def.secondary
-	end
-	for _, name in { "UpperTorso", "LowerTorso" } do
-		local p = model:FindFirstChild(name)
-		if p then
-			p.Color = def.primary
-		end
-	end
-	for _, name in { "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot" } do
-		local p = model:FindFirstChild(name)
-		if p then
-			p.Color = def.secondary
-		end
-	end
-	local torso = model:FindFirstChild("UpperTorso")
-	if torso and number then
-		local gui = make("SurfaceGui", { Face = Enum.NormalId.Front, CanvasSize = Vector2.new(100, 100), LightInfluence = 1 }, torso)
-		text({ Position = UDim2.fromScale(0.3, 0.15), Size = UDim2.fromScale(0.4, 0.45), Text = tostring(number), FontFace = FONT.num, TextScaled = true, TextColor3 = contrast(def.primary) }, gui)
-	end
-end
-
--- a ViewportFrame with a posed player in it; set(source) swaps who is shown
-function Menu.avatar(parent, props, yaw)
-	local vp = make("ViewportFrame", {
-		BackgroundTransparency = 1,
-		Ambient = Color3.fromRGB(150, 140, 205),
-		LightColor = Color3.fromRGB(255, 246, 236),
-		LightDirection = Vector3.new(-0.5, -1, -0.7),
-	}, parent)
+-- kit art for the menus (no characters): a club shirt with a number, a glow behind it and,
+-- if asked, a ball. set("me") uses your club and shirt number.
+function Menu.avatar(parent, props, _yaw)
+	local holder = frame({ BackgroundTransparency = 1 }, parent)
 	for key, value in props do
-		vp[key] = value
+		holder[key] = value
 	end
-	local worldModel = make("WorldModel", {}, vp)
-	local cam = make("Camera", { FieldOfView = 26 }, vp)
-	vp.CurrentCamera = cam
-	local holder = { vp = vp }
-
-	-- source: "me" for your own character, or { team = id, number = n, ball = bool };
-	-- pose "cheer" throws the arms up like a cover star
-	function holder.set(source, pose)
-		holder.source = source
-		worldModel:ClearAllChildren()
-		local model
+	local art = { vp = holder }
+	function art.set(source)
+		holder:ClearAllChildren()
+		local team, number, ball
 		if source == "me" then
-			local char = player.Character
-			if not char or not char:FindFirstChild("HumanoidRootPart") then
-				return
-			end
-			char.Archivable = true
-			local ok, copy = pcall(function()
-				return char:Clone()
-			end)
-			model = ok and copy or nil
+			team, number = sel.home, Menu.custom and Menu.custom.number or 7
 		else
-			local template = shared:FindFirstChild("MenuModel")
-			model = template and template:Clone()
-			if model then
-				dressKit(model, source.team, source.number)
-			end
+			team, number, ball = source.team, source.number, source.ball
 		end
-		if not model then
-			return
-		end
-		local hum = prepareModel(model)
-		if pose == "cheer" then
-			local angles = { RightShoulder = { 150, 0, 38 }, LeftShoulder = { 150, 0, -38 }, RightElbow = { 25, 0, 0 }, LeftElbow = { 25, 0, 0 }, Waist = { -10, 0, 0 } }
-			for joint, a in angles do
-				local partName = ({ RightShoulder = "RightUpperArm", LeftShoulder = "LeftUpperArm", RightElbow = "RightLowerArm", LeftElbow = "LeftLowerArm", Waist = "UpperTorso" })[joint]
-				local part = model:FindFirstChild(partName)
-				local motor = part and part:FindFirstChild(joint)
-				if motor and motor:IsA("Motor6D") then
-					motor.C0 = motor.C0 * CFrame.Angles(math.rad(a[1]), math.rad(a[2]), math.rad(a[3]))
-				end
-			end
-		end
-		model:PivotTo(CFrame.Angles(0, math.pi + (yaw or 0.3), 0))
-		model.Parent = worldModel
-		if source ~= "me" and source.ball then
-			make("Part", { Shape = Enum.PartType.Ball, Size = Vector3.one * 1.2, Color = Color3.fromRGB(255, 214, 64), Anchored = true, CFrame = model:GetPivot() * CFrame.new(0, -0.2, -1.1) }, worldModel)
-		end
-		local cf, size = model:GetBoundingBox()
-		local h = math.max(size.Y, 4)
-		local dist = (h * 0.56) / math.tan(math.rad(cam.FieldOfView / 2))
-		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, h * 0.04, dist), cf.Position + Vector3.new(0, h * 0.04, 0))
-		if hum and pose ~= "cheer" then
-			local animator = hum:FindFirstChildOfClass("Animator") or make("Animator", {}, hum)
-			local anim = make("Animation", { AnimationId = shared:GetAttribute("PackIdle") or "rbxassetid://507766666" })
-			local ok, track = pcall(animator.LoadAnimation, animator, anim)
-			if ok and track then
-				track.Looped = true
-				track:Play()
-			end
+		local w, h = holder.Size.X.Offset, holder.Size.Y.Offset
+		local size = math.floor(math.min(w, h) * 0.72)
+		local def = Teams.list[team] or Teams.list[1]
+		local glow = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.48), Size = UDim2.fromOffset(size * 1.25, size * 1.25), BackgroundColor3 = def.primary, BackgroundTransparency = 0.78 }, holder)
+		round(glow, size)
+		make("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1) }), Rotation = 90 }, glow)
+		shirt(holder, def.primary, number, size, UDim2.fromScale(0.5, 0.46))
+		if ball then
+			local b = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, size * 0.42, 0.46, size * 0.38), Size = UDim2.fromOffset(size * 0.3, size * 0.3), BackgroundColor3 = Color3.fromRGB(255, 214, 64) }, holder)
+			round(b, size)
+			make("UIStroke", { Color = Color3.fromRGB(40, 90, 210), Thickness = 3 }, b)
 		end
 	end
-	return holder
+	return art
 end
 
 ---------------------------------------------------------------- shared front-screen pieces
@@ -408,33 +326,41 @@ end
 local WORDMARK = Font.new("rbxasset://fonts/families/RobotoCondensed.json", Enum.FontWeight.Bold, Enum.FontStyle.Italic)
 Menu.logo = text({ AnchorPoint = Vector2.new(1, 1), Position = UDim2.fromOffset(1240, 692), Size = UDim2.fromOffset(320, 42), Text = "ARENA VOLLEYBALL", FontFace = WORDMARK, TextSize = 30, TextXAlignment = Enum.TextXAlignment.Right }, board)
 
--- you, standing on the left like a cover star
-Menu.cover = Menu.avatar(board, { Position = UDim2.fromOffset(-30, 40), Size = UDim2.fromOffset(340, 680), Visible = false }, 0.35)
-local function refreshCover()
-	task.wait(1)
-	Menu.cover.set("me")
+-- your profile, down the left of the front screens
+do
+	local card = frame({ Position = UDim2.fromOffset(76, 202), Size = UDim2.fromOffset(180, 326), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.12, Visible = false }, board)
+	outline(card, COL.line, 1, 0.45)
+	Menu.profileCard = card
+	Menu.profileBody = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, card)
 end
-player.CharacterAppearanceLoaded:Connect(refreshCover)
-if player.Character then
-	task.spawn(refreshCover)
-end
+
+-- fades between screens
+Menu.fader = frame({ Position = UDim2.new(0, -300, 0, -300), Size = UDim2.new(1, 600, 1, 600), BackgroundColor3 = COL.bg2, BackgroundTransparency = 1, ZIndex = 45, Active = false }, Menu.gui)
 
 ---------------------------------------------------------------- the title screen (shown while the game loads)
 
 do
 	local ts = Menu.screen("title")
-	Menu.titleArt = Menu.avatar(ts, { Position = UDim2.fromOffset(-40, 0), Size = UDim2.fromOffset(660, 720) }, 0.55)
-	local mark = frame({ Position = UDim2.fromOffset(600, 120), Size = UDim2.fromOffset(640, 230), BackgroundTransparency = 1 }, ts)
+	-- a big ball behind the wordmark
+	local orb = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(640, 300), Size = UDim2.fromOffset(420, 420), BackgroundTransparency = 1 }, ts)
+	round(orb, 210)
+	make("UIStroke", { Color = COL.teal, Thickness = 3, Transparency = 0.75 }, orb)
+	local inner = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.62, 0.62), BackgroundTransparency = 1 }, orb)
+	round(inner, 210)
+	make("UIStroke", { Color = COL.pink, Thickness = 2, Transparency = 0.8 }, inner)
+	Menu.titleOrb = orb
+	local mark = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(640, 160), Size = UDim2.fromOffset(760, 230), BackgroundTransparency = 1 }, ts)
 	text({ Size = UDim2.new(1, 0, 0, 60), Text = "ARENA", FontFace = WORDMARK, TextSize = 64, TextColor3 = COL.teal }, mark)
 	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 120), Text = "VOLLEYBALL", FontFace = WORDMARK, TextSize = 118, TextColor3 = COL.teal }, mark)
-	Menu.titlePrompt = frame({ Position = UDim2.fromOffset(600, 352), Size = UDim2.fromOffset(640, 30), BackgroundTransparency = 1 }, ts)
+	Menu.titlePrompt = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(640, 400), Size = UDim2.fromOffset(640, 30), BackgroundTransparency = 1 }, ts)
 	local key = frame({ AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(0.5, -48, 0.5, 0), Size = UDim2.fromOffset(22, 22), BackgroundColor3 = COL.teal }, Menu.titlePrompt)
 	round(key, 11)
 	text({ Size = UDim2.fromScale(1, 1), Text = "A", FontFace = FONT.title, TextSize = 13, TextColor3 = COL.ink }, key)
 	Menu.titlePromptText = text({ AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.5, -40, 0.5, 0), Size = UDim2.fromOffset(200, 30), Text = "PRESS ANY BUTTON", FontFace = FONT.head, TextSize = 22, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, Menu.titlePrompt)
 	Menu.titleKey = key
 	text({
-		Position = UDim2.fromOffset(600, 450),
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.fromOffset(640, 480),
 		Size = UDim2.fromOffset(640, 70),
 		Text = "ARENA VOLLEYBALL   ·   SEASON 1\nThis game saves your progress automatically. Please don't leave\nwhile the saving icon is showing.",
 		FontFace = FONT.head,
@@ -442,17 +368,13 @@ do
 		LineHeight = 1.15,
 	}, ts)
 	-- the spinning loading / saving icon
-	Menu.titleSpinner = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(920, 630), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1 }, ts)
+	Menu.titleSpinner = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(640, 630), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1 }, ts)
 	round(Menu.titleSpinner, 15)
 	make("UIStroke", { Color = COL.text, Thickness = 2 }, Menu.titleSpinner)
 	frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 10, 0, 2), BackgroundColor3 = COL.text }, Menu.titleSpinner)
 	Menu.titleLoaded = false
 	Menu.onShow.title = function()
 		Menu.logo.Visible = false
-		task.spawn(function()
-			task.wait(0.6)
-			Menu.titleArt.set("me", "cheer")
-		end)
 	end
 	-- loading: wait for the game's pieces (and your profile, briefly), then ask for a button
 	task.spawn(function()
@@ -469,6 +391,7 @@ do
 			return
 		end
 		Menu.titleSpinner.Rotation = (Menu.titleSpinner.Rotation + dt * 240) % 360
+		Menu.titleOrb.Rotation = (Menu.titleOrb.Rotation + dt * 6) % 360
 		local blink = Menu.titleLoaded and (0.5 + 0.5 * math.sin(os.clock() * 4)) or 0.85
 		Menu.titlePromptText.TextTransparency = 1 - blink
 		Menu.titleKey.BackgroundTransparency = 1 - blink
@@ -533,10 +456,11 @@ do
 	career.BackgroundColor3 = Color3.new(1, 1, 1)
 	career.BackgroundTransparency = 0
 	gradient(career, Color3.fromRGB(30, 150, 160), COL.bg1, 115)
-	Menu.careerArt = Menu.avatar(career, { Position = UDim2.fromOffset(0, 62), Size = UDim2.new(1, 0, 1, -62) }, -0.25)
+	Menu.careerArt = Menu.avatar(career, { Position = UDim2.fromOffset(0, 70), Size = UDim2.fromOffset(224, 280) }, -0.25)
 	text({ Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 46), Text = "CAREER", FontFace = FONT.num, TextSize = 46, TextColor3 = COL.teal, TextStrokeTransparency = 0.6 }, career)
 	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 14), Text = "M  O  D  E", FontFace = FONT.title, TextSize = 12 }, career)
-	Menu.chip(career, "NEW", UDim2.new(0, 16, 1, -40))
+	Menu.careerInfo = text({ Position = UDim2.fromOffset(12, 300), Size = UDim2.fromOffset(200, 40), FontFace = FONT.head, TextSize = 14, TextWrapped = true }, career)
+	Menu.careerChip = Menu.chip(career, "NEW", UDim2.new(0, 16, 1, -40))
 
 	-- ONLINE: seasons
 	local online = Menu.tile(home, UDim2.fromOffset(732, 202), UDim2.fromOffset(480, 262), function()
@@ -553,7 +477,7 @@ do
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextYAlignment = Enum.TextYAlignment.Top,
 	}, online)
-	Menu.chip(online, "NEW", UDim2.fromOffset(16, 218))
+	Menu.onlineChip = Menu.chip(online, "NEW", UDim2.fromOffset(16, 218))
 	Menu.onlineArt = Menu.avatar(online, { Position = UDim2.fromOffset(250, 4), Size = UDim2.fromOffset(226, 256) }, 0.5)
 
 	-- LIVE CONTENT: tips and news
@@ -656,11 +580,11 @@ do
 	text({ Position = UDim2.fromOffset(16, 56), Size = UDim2.fromOffset(430, 50), Text = "Choose your club and position and work your way up from rookie to pro.", FontFace = FONT.head, TextSize = 16, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, career)
 	Menu.chip(career, "PLAY NOW", UDim2.new(0, 16, 1, -40))
 	local practice = Menu.tile(play, UDim2.fromOffset(746, 405), UDim2.fromOffset(466, 195), function()
-		Menu.toast("Practice arena is coming soon")
+		Menu.openPractice()
 	end)
 	Menu.title(practice, "PRACTICE ARENA", 34)
-	text({ Position = UDim2.fromOffset(16, 56), Size = UDim2.fromOffset(430, 50), Text = "Work on your serve, timing and spikes with no one keeping score.", FontFace = FONT.head, TextSize = 16, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, practice)
-	Menu.chip(practice, "COMING SOON", UDim2.new(0, 16, 1, -40), COL.text)
+	text({ Position = UDim2.fromOffset(16, 56), Size = UDim2.fromOffset(430, 50), Text = "Serving, receiving and attacking drills, or free play with no score.", FontFace = FONT.head, TextSize = 16, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top }, practice)
+	Menu.chip(practice, "OPEN", UDim2.new(0, 16, 1, -40))
 	Menu.hints(play, { { "CLICK", "Select" } })
 	Menu.onShow.play = function()
 		Menu.playArt.set({ team = sel.home, number = 9, ball = true })

@@ -9,6 +9,5 @@ local slotOfPlayer = {}
 local teams = { { score = 0, sets = 0 }, { score = 0, sets = 0 } }
 local lastSpec
 local function beginMatch(spec) lastSpec = spec end
-task = { spawn = function(f, ...) f(...) end }
 local remoteLog = {}
 remote.FireClient = function(_, plr, kind, a) table.insert(remoteLog, kind) end

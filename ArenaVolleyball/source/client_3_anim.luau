@@ -103,6 +103,20 @@ local POSES = {
 		{ 0.6, {} },
 	} },
 	dive = { keys = { { 0, {} }, { 0.14, DIVE }, { 0.6, DIVE }, { 1, {} } } },
+	-- after a point: arms up and a little hop, or hands on hips and head down
+	celebrate = { keys = {
+		{ 0, {} },
+		{ 0.18, { RightShoulder = J(165, 0, 35), LeftShoulder = J(165, 0, -35), RightElbow = J(20), LeftElbow = J(20), Neck = J(-18), Waist = J(-8), Root = J(0, 0, 0, 0.25) } },
+		{ 0.45, { RightShoulder = J(150, 0, 45), LeftShoulder = J(150, 0, -45), RightElbow = J(35), LeftElbow = J(35), Neck = J(-12), Root = J(0, 0, 0, 0) } },
+		{ 0.75, { RightShoulder = J(165, 0, 35), LeftShoulder = J(165, 0, -35), RightElbow = J(20), LeftElbow = J(20), Neck = J(-18), Root = J(0, 0, 0, 0.2) } },
+		{ 1.3, {} },
+	} },
+	dejected = { keys = {
+		{ 0, {} },
+		{ 0.35, { RightShoulder = J(-10, 0, 40), LeftShoulder = J(-10, 0, -40), RightElbow = J(70), LeftElbow = J(70), Neck = J(28), Waist = J(10) } },
+		{ 1.5, { RightShoulder = J(-10, 0, 40), LeftShoulder = J(-10, 0, -40), RightElbow = J(70), LeftElbow = J(70), Neck = J(28), Waist = J(10) } },
+		{ 2, {} },
+	} },
 }
 
 local function motorsOf(model)

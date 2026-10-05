@@ -55,7 +55,7 @@ do
 	HUD.awayName, HUD.awayStripe, HUD.awayServe = teamBox(220)
 	HUD.awayServe.Position = UDim2.new(1, -9, 0.5, 0)
 	local strip = frame({ Position = UDim2.fromOffset(0, 32), Size = UDim2.fromOffset(294, 18), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.25 }, bug)
-	HUD.target = text({ Position = UDim2.fromOffset(8, 0), Size = UDim2.fromOffset(220, 18), FontFace = FONT.head, TextSize = 11, TextColor3 = COL.dim, TextXAlignment = LEFT }, strip)
+	HUD.target = text({ Position = UDim2.fromOffset(8, 0), Size = UDim2.fromOffset(226, 18), FontFace = FONT.head, TextSize = 11, TextColor3 = COL.dim, TextXAlignment = LEFT, TextTruncate = Enum.TextTruncate.AtEnd }, strip)
 	HUD.dots = {}
 	for i = 1, 3 do
 		HUD.dots[i] = frame({ Position = UDim2.new(1, -62 + (i - 1) * 18, 0.5, -4), Size = UDim2.fromOffset(12, 8), BackgroundColor3 = COL.text, BackgroundTransparency = 0.8 }, strip)
@@ -384,7 +384,14 @@ function HUD.refresh()
 		target ..= "   ·   SETS " .. state.sets[1] .. "-" .. state.sets[2]
 	end
 	local mine = myTeam()
-	if mine ~= 0 and state.serveIndex then
+	if state.practice then
+		local names = { SERVE = "SERVING", RECEIVE = "RECEIVING", ATTACK = "ATTACKING", FREE = "FREE PLAY" }
+		local made = { SERVE = "IN", RECEIVE = "GOOD PASSES", ATTACK = "KILLS", FREE = "" }
+		target = "PRACTICE  ·  " .. (names[state.practice.drill] or "FREE PLAY")
+		if state.practice.drill ~= "FREE" then
+			target ..= "  ·  " .. state.practice.made .. "/" .. state.practice.attempts .. " " .. made[state.practice.drill]
+		end
+	elseif mine ~= 0 and state.serveIndex then
 		-- which rotation your team is in (1 = the lineup as it started)
 		local rotation = ((state.serveIndex[mine] or 1) - 1) % 6 + 1
 		target ..= "   ·   ROTATION " .. rotation

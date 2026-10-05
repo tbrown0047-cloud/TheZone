@@ -217,8 +217,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		remote:FireServer("ability", {})
 	elseif key == Enum.KeyCode.F or key == Enum.KeyCode.DPadUp then
 		remote:FireServer("call", {})
-	elseif key == Enum.KeyCode.V then
-		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
+	elseif key == Enum.KeyCode.V or key == Enum.KeyCode.DPadDown then
+		Cam.cycle()
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
 		press()
 	elseif key == Enum.KeyCode.E or key == Enum.KeyCode.ButtonX then
@@ -320,17 +320,27 @@ local function updateFree(dt)
 	cam.CFrame = CFrame.new(Cam.freePos) * rot
 end
 
+-- the cameras you can pick (V cycles through them)
+Cam.LIST = { "broadcast", "sideline", "endline", "dynamic", "player" }
+Cam.NAMES = { broadcast = "BROADCAST", sideline = "SIDELINE TV", endline = "HIGH END ZONE", dynamic = "DYNAMIC", player = "BEHIND PLAYER" }
+function Cam.cycle(step)
+	local i = table.find(Cam.LIST, settings.camera) or 1
+	settings.camera = Cam.LIST[(i - 1 + (step or 1)) % #Cam.LIST + 1]
+	Cam.focus = nil
+	HUD.flash("CAMERA: " .. Cam.NAMES[settings.camera], COL.teal)
+end
+
 function Cam.shake(power, seconds)
 	Cam.shakePower = math.max(Cam.shakePower, power)
 	Cam.shakeUntil = math.max(Cam.shakeUntil, os.clock() + seconds)
 end
 
 UserInputService.InputChanged:Connect(function(input, processed)
-	if inMenu or settings.camera ~= "broadcast" then
+	if inMenu or settings.camera == "player" then
 		return
 	end
 	if input.UserInputType == Enum.UserInputType.MouseWheel and not processed then
-		Cam.zoom = math.clamp(Cam.zoom - input.Position.Z * 0.06, 0.6, 1.4)
+		Cam.zoom = math.clamp(Cam.zoom - input.Position.Z * 0.06, 0.6, 1.5)
 	end
 end)
 
@@ -374,6 +384,33 @@ function Cam.update(dt, ballPos)
 		Cam.shakePower = 0
 	end
 	cam.CameraType = Enum.CameraType.Scriptable
+	local function smooth(target, speed)
+		Cam.focus = Cam.focus and Cam.focus:Lerp(target, math.min(1, dt * speed)) or target
+		return Cam.focus
+	end
+	if settings.camera == "sideline" then
+		-- the TV view from the side of the court, panning with the play
+		local f = smooth(Vector3.new(C.X + (ballPos.X - C.X) * 0.3, GY, C.Z + (ballPos.Z - C.Z) * 0.55), 2.5)
+		local eye = Vector3.new(C.X + HALF_W + 38 * Cam.zoom, GY + 19 * Cam.zoom, f.Z)
+		cam.FieldOfView = 48
+		cam.CFrame = CFrame.lookAt(eye + shake, Vector3.new(f.X, GY + 3, f.Z))
+		return
+	elseif settings.camera == "endline" then
+		-- high behind your end line, the whole court in view
+		local f = smooth(Vector3.new(C.X + (ballPos.X - C.X) * 0.35, GY, C.Z), 2)
+		local eye = Vector3.new(f.X, GY + 34 * Cam.zoom, C.Z + s * (HALF_L + 26 * Cam.zoom))
+		cam.FieldOfView = 55
+		cam.CFrame = CFrame.lookAt(eye + shake, Vector3.new(f.X, GY, C.Z - s * 4))
+		return
+	elseif settings.camera == "dynamic" then
+		-- follows the ball closely and swings with it
+		local f = smooth(Vector3.new(ballPos.X, math.max(ballPos.Y - 2, GY + 2), ballPos.Z), 3.5)
+		local side = (f.Z - C.Z) * s > 0 and 1 or 0.6
+		local eye = Vector3.new(C.X + (f.X - C.X) * 0.6 + 8, GY + 11 * Cam.zoom, f.Z + s * (22 * Cam.zoom * side + 6))
+		cam.FieldOfView = 58
+		cam.CFrame = CFrame.lookAt(eye + shake, f)
+		return
+	end
 	-- follow a point between your player and the ball, kept on the court
 	local ballOnOurSide = (ballPos.Z - C.Z) * s > 0
 	local blend = ballOnOurSide and 0.45 or 0.3
@@ -415,7 +452,7 @@ local function updatePrompts()
 		HUD.setPrompts({
 			{ pad and "START" or "M", "Pause" },
 			{ pad and "BACK" or "G", "Free cam" },
-			{ "V", settings.camera == "player" and "Broadcast camera" or "Behind-player camera" },
+			{ pad and "DOWN" or "V", "Camera: " .. Cam.NAMES[settings.camera] },
 			settings.camera == "player" and { "SHIFT", "Shift lock" } or nil,
 		})
 	end

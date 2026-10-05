@@ -46,6 +46,16 @@ function sendState(plr)
 			})
 		end
 	end
+	if matchActive and teams[1].def then
+		local setNo = teams[1].sets + teams[2].sets + 1
+		updateScoreboards(
+			practice and ("PRACTICE  ·  " .. practice.drill) or ("SET " .. setNo .. "  ·  FIRST TO " .. setTarget()),
+			teams[1].def.short .. "   " .. teams[1].score .. " - " .. teams[2].score .. "   " .. teams[2].def.short,
+			practice and (practice.made .. " / " .. practice.attempts) or ("SETS  " .. teams[1].sets .. " - " .. teams[2].sets)
+		)
+	else
+		updateScoreboards("ARENA VOLLEYBALL", "WELCOME", Teams.LEAGUE)
+	end
 	local data = {
 		active = matchActive,
 		phase = phase,
@@ -62,7 +72,9 @@ function sendState(plr)
 		serveIndex = { teams[1].serveIndex, teams[2].serveIndex },
 		teamIds = { teams[1].defId, teams[2].defId },
 		lineups = { teams[1].lineup, teams[2].lineup },
-		points = pointsToWin,
+		points = setTarget(),
+		setScores = { teams[1].setScores or {}, teams[2].setScores or {} },
+		timeouts = { teams[1].timeouts or 2, teams[2].timeouts or 2 },
 		setsToWin = setsToWin,
 		teamSize = TEAM_SIZE,
 		paused = paused,
@@ -75,6 +87,7 @@ function sendState(plr)
 		kits = { teams[1].kitIndex, teams[2].kitIndex },
 		court = courtStyle,
 		controls = controls,
+		practice = practice,
 	}
 	if plr then
 		remote:FireClient(plr, "state", data)
@@ -83,7 +96,27 @@ function sendState(plr)
 	end
 end
 
+-- the person in a practice session (there's only one)
+local function practiceSlot()
+	for t = 1, 2 do
+		for _, s in teams[t].slots do
+			if s.player then
+				return s
+			end
+		end
+	end
+	return nil
+end
+
 function setupServe()
+	-- practice drills decide who serves: you (serving), the other side (receiving)
+	local me = practice and practiceSlot()
+	if me and practice.drill == "SERVE" then
+		servingTeam = me.team
+		teams[me.team].serveIndex = me.index
+	elseif me and practice.drill == "RECEIVE" then
+		servingTeam = 3 - me.team
+	end
 	phase = "serve"
 	local srv = currentServer()
 	ball.live = false
@@ -119,6 +152,7 @@ local function startMatch()
 	servingTeam = (matchNo % 2 == 1) and 1 or 2 -- take turns serving first
 	for t = 1, 2 do
 		teams[t].score, teams[t].sets = 0, 0
+		teams[t].setScores, teams[t].timeouts, teams[t].run = {}, 2, 0
 		teams[t].serveIndex = (t == servingTeam) and 1 or 0
 		for _, s in teams[t].slots do
 			s.stats = { kills = 0, aces = 0, blocks = 0, digs = 0 }
@@ -149,6 +183,7 @@ function stopMatch()
 	end
 	local context = matchContext
 	matchContext = nil
+	practice = nil
 	paused = false
 	matchActive = false
 	phase = "idle"
@@ -236,7 +271,71 @@ local function aiServe(slot, jumped)
 	if rng:NextNumber() < ai.fault * faults * (1.5 - serve) then
 		power = rng:NextNumber() < 0.5 and 0.05 or 0.99
 	end
-	doServe(slot, smartTarget(slot.team, math.max(margin, 1)), power, jumped == true, slot.root.Position)
+	local target = smartTarget(slot.team, math.max(margin, 1))
+	local me = practice and practice.drill == "RECEIVE" and practiceSlot()
+	if me and me.root then
+		-- receiving drill: every serve comes at you
+		target = Vector3.new(me.root.Position.X, FLOOR, me.root.Position.Z) + jitter(3)
+		power = math.clamp(power, 0.45, 0.85)
+	end
+	doServe(slot, target, power, jumped == true, slot.root.Position)
+end
+
+-- A serve that breaks the rules: the point goes to the other team
+function serveFault(slot, reason)
+	ball.live = true
+	ball.lastTeam, ball.lastSlot, ball.lastKind = slot.team, slot, "serve"
+	ball.mode = "rest"
+	ball.holder = nil
+	ball.restPos = serveSpot(slot) + Vector3.new(0, R, 0)
+	phase = "rally"
+	sendBall()
+	awardPoint(3 - slot.team, reason)
+end
+
+-- Timeouts: two per team per set. The AI calls one when the other side goes on a run.
+local function callTimeout(team, who)
+	local tm = teams[team]
+	if (tm.timeouts or 0) <= 0 or (phase ~= "point" and phase ~= "serve") then
+		return false
+	end
+	tm.timeouts -= 1
+	local extra = 8
+	phaseUntil += extra
+	serveAt += extra
+	serveDeadline += extra
+	banner("TIMEOUT", tm.def.name .. (who and ("   ·   " .. who) or "") .. "   ·   " .. tm.timeouts .. " LEFT", team)
+	sendState()
+	return true
+end
+
+function afterPoint(winner, bigMoment)
+	-- the scorers celebrate, the others drop their heads
+	local cheered = 0
+	for _, s in teams[winner].slots do
+		if s.isAI and s.model and (bigMoment or rng:NextNumber() < 0.45) and cheered < (bigMoment and 6 or 3) then
+			cheered += 1
+			task.delay(rng:NextNumber(0.05, 0.4), act, s, "celebrate")
+		end
+	end
+	for _, s in teams[3 - winner].slots do
+		if s.isAI and s.model and rng:NextNumber() < (bigMoment and 0.8 or 0.25) then
+			task.delay(rng:NextNumber(0.2, 0.7), act, s, "dejected")
+		end
+	end
+	remote:FireAllClients("crowd", winner, bigMoment == true)
+	if bigMoment or practice then
+		return
+	end
+	local loser = teams[3 - winner]
+	local hasPerson = false
+	for _, s in loser.slots do
+		hasPerson = hasPerson or s.player ~= nil
+	end
+	-- three in a row against them, mid-set: the AI coach stops the game
+	if not hasPerson and (teams[winner].run or 0) >= 3 and teams[winner].score >= 8 and rng:NextNumber() < 0.6 then
+		task.defer(callTimeout, 3 - winner)
+	end
 end
 
 local function updateMatch(t)
@@ -244,10 +343,27 @@ local function updateMatch(t)
 		setupServe()
 	elseif phase == "setover" and t >= phaseUntil then
 		teams[1].score, teams[2].score = 0, 0
-		teams[1].subs, teams[2].subs = 0, 0 -- substitutions are counted per set
+		teams[1].subs, teams[2].subs = 0, 0 -- substitutions and timeouts are counted per set
+		teams[1].timeouts, teams[2].timeouts = 2, 2
+		if setTarget() ~= pointsToWin then
+			banner("DECIDING SET", "FIRST TO " .. setTarget(), 0)
+		end
 		setupServe()
 	elseif phase == "matchover" and t >= phaseUntil then
 		stopMatch()
+	elseif phase == "serve" and practice and practice.drill == "ATTACK" then
+		-- attacking drill: the coach throws a pass to your setter, who sets you
+		local me = practiceSlot()
+		if me and t >= serveAt then
+			local spot = setSpot(me.team)
+			local p = floorPoint(me.team, 0, 14) + Vector3.new(0, 3, 0)
+			ball.live = true
+			ball.lastTeam, ball.lastSlot, ball.lastKind, ball.touches = me.team, nil, "bump", 1
+			ball.holder = nil
+			phase = "rally"
+			launch(p, solve(p, spot, 1.25), t)
+			sendState()
+		end
 	elseif phase == "serve" then
 		local srv = currentServer()
 		if srv.root then
@@ -270,7 +386,20 @@ local function updateMatch(t)
 					end
 				end
 			elseif t >= serveDeadline then
-				doServe(srv, floorPoint(3 - srv.team, 0, HALF_L * 0.5), 0.5, false, srv.root.Position)
+				serveFault(srv, "SERVE DELAY") -- 8 seconds to serve, like the real rule
+			end
+		end
+	elseif phase == "rally" and ball.live then
+		-- touching the net between the antennas is a fault
+		for team = 1, 2 do
+			for _, s in teams[team].slots do
+				if s.player and s.root and s.humanoid then
+					local rp = s.root.Position
+					if math.abs(rp.Z - C.Z) < 0.85 and math.abs(rp.X - C.X) < HALF_W + 0.5 and rp.Y > standHeight(s) + 0.6 then
+						awardPoint(3 - team, "NET TOUCH")
+						return
+					end
+				end
 			end
 		end
 	end
@@ -295,7 +424,8 @@ local function steer(slot, order, t, dt, lookAt)
 		if not mem.target or flatDist(want, mem.target) < 1.5 or order.sprint then
 			mem.target, mem.switchAt = want, nil
 		elseif not mem.switchAt then
-			mem.switchAt = t + rng:NextNumber(0.03, order.run and 0.12 or 0.35)
+			-- each player reacts in his own time
+			mem.switchAt = t + (mem.reactBase or 0) + rng:NextNumber(0.03, order.run and 0.12 or 0.35)
 		elseif t >= mem.switchAt then
 			mem.target, mem.switchAt = want, nil
 		end
@@ -316,7 +446,7 @@ local function steer(slot, order, t, dt, lookAt)
 		elseif order.run then
 			maxSpeed += 3
 		elseif order.walk then
-			maxSpeed = 8.5 * (mem.pace or 1)
+			maxSpeed = 8.5 * (mem.pace or 1) * (mem.walkMul or 1)
 		end
 		if (mem.recoverUntil or 0) > t then
 			maxSpeed *= 0.35 -- getting up after a dive
@@ -340,7 +470,7 @@ local function steer(slot, order, t, dt, lookAt)
 			end
 		end
 		-- accelerate towards it instead of snapping
-		local accel = grounded and ((order.sprint or order.run) and (backRow and 58 or 46) or (backRow and 32 or 24)) or 6
+		local accel = (grounded and ((order.sprint or order.run) and (backRow and 58 or 46) or (backRow and 32 or 24)) or 6) * (mem.accelMul or 1)
 		local change = desired - vel
 		local maxChange = accel * dt
 		if change.Magnitude > maxChange then
@@ -651,13 +781,34 @@ local function aiTeam(team, t, dt)
 
 	local orders = {}
 	local serving = servingTeam == team
+	-- when the phase changes, everyone starts moving in his own time
+	if tm.seenPhase ~= phase then
+		tm.seenPhase = phase
+		for _, sl in tm.slots do
+			if sl.ai then
+				sl.ai.restUntil = t + rng:NextNumber(0.1, phase == "point" and 1.5 or 0.5)
+			end
+		end
+	end
+	-- a little life around a spot: shifting weight, a step this way or that
+	local function around(sl, spot, walk)
+		local mem = sl.ai
+		if not mem.idleAt or t >= mem.idleAt then
+			mem.idleAt = t + rng:NextNumber(1.2, 3.2)
+			mem.idleOffset = Vector3.new(rng:NextNumber(-0.9, 0.9), 0, rng:NextNumber(-0.7, 0.7))
+		end
+		if t < (mem.restUntil or 0) then
+			return { hold = true }
+		end
+		return { pos = spot + mem.idleOffset, walk = walk }
+	end
 	if phase == "serve" then
 		local srv = currentServer()
 		for _, sl in tm.slots do
 			if sl == srv then
 				orders[sl] = { hold = true }
-			else
-				orders[sl] = { pos = homeSpot(sl, serving and "serving" or "receive"), walk = true }
+			elseif sl.ai then
+				orders[sl] = around(sl, homeSpot(sl, serving and "serving" or "receive"), true)
 			end
 		end
 	elseif phase == "rally" and ball.mode == "fly" and ball.live then
@@ -675,8 +826,8 @@ local function aiTeam(team, t, dt)
 		for _, sl in tm.slots do
 			if sl == nextServer then
 				orders[sl] = { pos = serveSpot(sl), run = true }
-			else
-				orders[sl] = { pos = homeSpot(sl, serving and "serving" or "receive"), walk = true }
+			elseif sl.ai then
+				orders[sl] = around(sl, homeSpot(sl, serving and "serving" or "receive"), true)
 			end
 		end
 	end
@@ -699,6 +850,8 @@ local function beginMatch(spec)
 		end
 	end
 	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan, spec.kit, spec.awayKit)
+	practice = spec.mode == "practice" and { drill = spec.drill or "FREE", attempts = 0, made = 0 } or nil
+	pcall(dressStadium, teams[1].kit, teams[2].kit)
 	courtStyle = math.clamp(math.floor(tonumber(spec.court) or 1), 1, #Teams.COURTS)
 	applyCourtStyle(courtStyle)
 	pointsToWin = spec.points or Config.POINTS_TO_WIN
@@ -754,8 +907,10 @@ local function quickPlay(plr, data)
 		away = home % count + 1
 	end
 	local points, sets = tonumber(data.points), tonumber(data.sets)
+	local drills = { SERVE = true, RECEIVE = true, ATTACK = true, FREE = true }
 	beginMatch({
-		mode = "quick",
+		mode = data.mode == "practice" and "practice" or "quick",
+		drill = drills[data.drill] and data.drill or "FREE",
 		kit = tonumber(data.kit),
 		court = tonumber(data.court),
 		home = home,
@@ -850,6 +1005,11 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 	elseif action == "sub" then
 		substitute(plr, data)
 		return
+	elseif action == "timeout" then
+		if not callTimeout(ctrl.team, plr.DisplayName) then
+			remote:FireClient(plr, "notice", "Timeouts can only be called between rallies (two per set)")
+		end
+		return
 	elseif action == "plan" then
 		-- tactics and roles during the match (the lineup changes only by substitution)
 		local team = teams[ctrl.team]
@@ -883,6 +1043,11 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 
 	if action == "serve" then
 		if phase == "serve" and currentServer() == slot and ball.mode == "hold" then
+			-- serving from inside the court is a foot fault (a jump serve may land inside)
+			if not air and (rootPos.Z - C.Z) * side(slot.team) < HALF_L - 0.3 then
+				serveFault(slot, "FOOT FAULT")
+				return
+			end
 			local fallback = floorPoint(3 - slot.team, 0, HALF_L * 0.5)
 			doServe(slot, aim or fallback, tonumber(data.power) or 0.5, air, rootPos)
 		end

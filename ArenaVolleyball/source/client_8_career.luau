@@ -733,12 +733,60 @@ function Menu.openOnline()
 	Menu.show("onlinehub")
 end
 
+---------------------------------------------------------------- your profile on the front screens
+
+function Menu.refreshProfileCard()
+	local body = Menu.profileBody
+	if not body then
+		return
+	end
+	body:ClearAllChildren()
+	text({ Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(156, 18), Text = "WELCOME BACK", FontFace = FONT.title, TextSize = 13, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, body)
+	text({ Position = UDim2.fromOffset(12, 28), Size = UDim2.fromOffset(156, 24), Text = string.upper(player.DisplayName), FontFace = FONT.title, TextSize = 19, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, body)
+	shirt(body, Teams.list[sel.home].primary, Menu.custom.number, 56, UDim2.fromOffset(140, 30))
+	local career = profile and profile.career
+	local online = profile and profile.online
+	local wins, losses = 0, 0
+	for _, h in history do
+		if h.mine == h.winner then
+			wins += 1
+		else
+			losses += 1
+		end
+	end
+	local rows = {
+		{ "CAREER", career and (Teams.list[career.club].short .. "  ·  OVR " .. career.ovr) or "Not started" },
+		{ "", career and ("Season " .. career.season .. "  ·  " .. (career.phase == "league" and ("Round " .. career.round) or "Playoffs")) or "" },
+		{ "ONLINE", online and ("Division " .. online.division .. "  ·  " .. online.points .. " pts") or "Division 10" },
+		{ "", online and (online.wins .. "W  " .. online.losses .. "L") or "" },
+		{ "THIS SESSION", wins .. "W  " .. losses .. "L" },
+		{ "POSITION", Teams.ROLES[Menu.custom.role] },
+	}
+	local y = 70
+	for _, row in rows do
+		if row[1] ~= "" then
+			y += 8
+			text({ Position = UDim2.fromOffset(12, y), Size = UDim2.fromOffset(156, 16), Text = row[1], FontFace = FONT.title, TextSize = 12, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, body)
+			y += 16
+		end
+		text({ Position = UDim2.fromOffset(12, y), Size = UDim2.fromOffset(156, 20), Text = row[2], FontFace = FONT.head, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, body)
+		y += 20
+	end
+	-- the career and online tiles on HOME show where you are
+	if Menu.careerInfo then
+		Menu.careerInfo.Text = career and (Teams.list[career.club].name .. "\nSEASON " .. career.season .. "  ·  OVR " .. career.ovr) or "Create your pro"
+	end
+end
+
 ---------------------------------------------------------------- messages for these screens
 
 remote.OnClientEvent:Connect(function(kind, a, b, c)
 	if kind == "profile" then
 		profile = a
 		savingOk = b ~= false
+		if inMenu and Menu.profileCard and Menu.profileCard.Visible then
+			Menu.refreshProfileCard()
+		end
 		if inMenu then
 			if Menu.current == "career_new" and profile.career then
 				Menu.show("career", false)

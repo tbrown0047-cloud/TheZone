@@ -194,3 +194,69 @@ remote.OnClientEvent:Connect(function(kind, a)
 		end
 	end
 end)
+
+---------------------------------------------------------------- PRACTICE ARENA
+
+local DRILLS = {
+	{ key = "SERVE", name = "SERVING", info = "You serve every point. Practise power and the green zone, and jump serves. Counts serves that land in." },
+	{ key = "RECEIVE", name = "RECEIVING", info = "The other side serves straight at you. Read it and pass to the setter. Counts good passes." },
+	{ key = "ATTACK", name = "ATTACKING", info = "The coach throws a pass, your setter sets you. Jump and spike past the block. Counts kills." },
+	{ key = "FREE", name = "FREE PLAY", info = "Normal rallies with no score limit. Play as long as you like." },
+}
+Menu.drill = "SERVE"
+
+do
+	local screenFrame = Menu.screen("practice")
+	customHeader(screenFrame, "PRACTICE ARENA", "PICK A DRILL   ·   QUIT FROM THE PAUSE MENU WHEN YOU'RE DONE")
+	Menu.practiceBody = frame({ Position = UDim2.fromOffset(72, 116), Size = UDim2.fromOffset(1136, 500), BackgroundTransparency = 1 }, screenFrame)
+	Menu.hints(screenFrame, { { "BACK", "Back", Menu.back } }, UDim2.fromOffset(72, 636))
+end
+
+function Menu.refreshPractice()
+	local body = Menu.practiceBody
+	body:ClearAllChildren()
+	for i, d in DRILLS do
+		local x = (i - 1) * 284
+		local on = Menu.drill == d.key
+		local card = button({ Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(272, 330), BackgroundTransparency = on and 0.05 or 0.12, BackgroundColor3 = on and COL.panelHi or COL.panel }, body)
+		outline(card, on and COL.teal or COL.line, on and 2 or 1, on and 0 or 0.45)
+		Menu.icon(card, ({ SERVE = "ball", RECEIVE = "court", ATTACK = "bars", FREE = "clock" })[d.key], 64, on and COL.teal or COL.violet, UDim2.fromOffset(136, 86))
+		text({ Position = UDim2.fromOffset(0, 150), Size = UDim2.new(1, 0, 0, 34), Text = d.name, FontFace = FONT.title, TextSize = 28, TextColor3 = on and COL.teal or COL.text }, card)
+		text({ Position = UDim2.fromOffset(20, 196), Size = UDim2.fromOffset(232, 110), Text = d.info, FontFace = FONT.head, TextSize = 16, TextColor3 = COL.dim, TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top }, card)
+		card.Activated:Connect(function()
+			Menu.drill = d.key
+			Menu.refreshPractice()
+		end)
+	end
+	local club = customPanel(body, 0, 348, 700, 150)
+	text({ Position = UDim2.fromOffset(20, 12), Size = UDim2.fromOffset(300, 24), Text = "YOUR CLUB", FontFace = FONT.title, TextSize = 18, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, club)
+	badge(club, sel.home, 80, UDim2.fromOffset(130, 46))
+	for k, glyph in { "◀", "▶" } do
+		local arrow = secondaryButton({ Position = UDim2.fromOffset(k == 1 and 70 or 226, 66), Size = UDim2.fromOffset(44, 44) }, club, glyph, 18)
+		arrow.Activated:Connect(function()
+			local count = #Teams.list
+			repeat
+				sel.home = (sel.home - 1 + (k == 1 and -1 or 1)) % count + 1
+			until sel.home ~= sel.away
+			sel.plan = Teams.cleanPlan(sel.home, nil)
+			sel.lineup = sel.plan.lineup
+			sel.slotPicked = false
+			Menu.refreshPractice()
+		end)
+	end
+	text({ Position = UDim2.fromOffset(290, 50), Size = UDim2.fromOffset(390, 30), Text = Teams.list[sel.home].name, FontFace = FONT.title, TextSize = 24, TextXAlignment = Enum.TextXAlignment.Left }, club)
+	text({ Position = UDim2.fromOffset(290, 84), Size = UDim2.fromOffset(390, 40), Text = "You play your preferred position (" .. Teams.ROLES[Menu.custom.role] .. "). Change it in Edit Player.", FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left }, club)
+	local go = primaryButton({ Position = UDim2.fromOffset(880, 420), Size = UDim2.fromOffset(256, 60) }, body, "START DRILL  ▸", 22)
+	go.Activated:Connect(function()
+		Menu.startMatch({ mode = "practice", drill = Menu.drill })
+	end)
+end
+Menu.onShow.practice = Menu.refreshPractice
+
+function Menu.openPractice()
+	if state.active then
+		Menu.toast("A match is on in this server. Practice when it's finished.")
+		return
+	end
+	Menu.show("practice")
+end
