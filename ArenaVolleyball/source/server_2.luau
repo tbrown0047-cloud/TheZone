@@ -10,11 +10,8 @@ for t = 1, 2 do
 		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {} }
 	end
 end
--- People never play with their own Roblox character: each one controls an AI body on
--- his team. In "switch" mode he jumps to whoever plays the ball next (or presses the
--- switch key); in "lock" mode he keeps one player all match.
-local slotOfPlayer = {} -- the body each person is controlling right now
-local controllers = {} -- person -> { team, mode = "switch" | "lock", home = slot index, auto = bool }
+local slotOfPlayer = {} -- the slot each person plays in (with his own character)
+local controllers = {} -- people in the match: { team, home = slot index }
 local charConnections = {}
 
 local function tactic(team, key)
@@ -416,119 +413,28 @@ local function animateBot(slot)
 end
 
 local function clearBody(slot)
-	if slot.model then
+	if slot.isAI and slot.model then
 		slot.model:Destroy()
 	end
 	slot.model, slot.humanoid, slot.root, slot.tracks, slot.anim, slot.align = nil, nil, nil, nil, nil, nil
 	slot.ai = {}
 end
 
----------------------------------------------------------------- people controlling bodies
-
--- What a person's body can do: a little quicker than the AI so it feels responsive
-local function pilotSpeed(slot)
-	return 17 + 4 * attr01(slot, "PHY")
-end
-
--- Hands a body back to the AI
-local function releasePilot(slot)
-	if not slot or not slot.player then
+local function bindCharacter(slot, plr, char)
+	local hum = char:WaitForChild("Humanoid", 10)
+	local hrp = char:WaitForChild("HumanoidRootPart", 10)
+	if slot.player ~= plr or not hum or not hrp then
 		return
 	end
-	slot.player = nil
-	slot.isAI = true
-	slot.ai = { vel = Vector3.zero, pace = slot.ai and slot.ai.pace or 1, drift = slot.ai and slot.ai.drift or 0 }
-	if slot.root then
-		pcall(function()
-			slot.root:SetNetworkOwner(nil)
-		end)
-	end
-	if slot.humanoid then
-		slot.humanoid.AutoRotate = false
-		slot.humanoid:Move(Vector3.zero)
-	end
-	if slot.align then
-		slot.align.Enabled = true
-	end
-end
-
--- Gives a person control of a body: its physics runs on his screen so it moves at once
-local function pilotSlot(plr, slot)
-	if not slot or not slot.model or (slot.player and slot.player ~= plr) then
-		return nil
-	end
-	if slot.player == plr then
-		return slot
-	end
-	local old = slotOfPlayer[plr]
-	if old then
-		releasePilot(old)
-	end
-	slot.player = plr
-	slot.isAI = false
-	slotOfPlayer[plr] = slot
-	if slot.humanoid then
-		slot.humanoid.AutoRotate = true
-		slot.humanoid.WalkSpeed = pilotSpeed(slot)
-		slot.humanoid:Move(Vector3.zero)
-	end
-	if slot.align then
-		slot.align.Enabled = false
-	end
-	if slot.root then
-		pcall(function()
-			slot.root:SetNetworkOwner(plr)
-		end)
-	end
-	sendState()
-	return slot
-end
-
--- In switch mode, a person follows the play: he takes over whoever plays the ball next
-local function autoSwitch(team, slot)
-	if not slot or slot.player or not slot.model then
+	slot.model, slot.humanoid, slot.root = char, hum, hrp
+	task.wait(0.15)
+	if slot.player ~= plr or slot.model ~= char then
 		return
 	end
-	for plr, ctrl in controllers do
-		if ctrl.team == team and ctrl.mode == "switch" and ctrl.auto ~= false and slotOfPlayer[plr] ~= slot then
-			pilotSlot(plr, slot)
-			return
-		end
-	end
-end
-
--- The free teammate nearest a point (for the switch key)
-local function nearestFree(team, point, exclude, plr)
-	local best, bestD = nil, math.huge
-	for _, s in teams[team].slots do
-		if s ~= exclude and not s.player and s.root and (s.reserved == nil or s.reserved == plr) then
-			local d = flatDist(s.root.Position, point)
-			if d < bestD then
-				best, bestD = s, d
-			end
-		end
-	end
-	return best
-end
-
--- Your own character waits on the bench like a coach while you play
-local function parkCharacter(plr)
-	local ctrl = controllers[plr]
-	local char = plr.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not ctrl or not hrp then
-		return
-	end
-	local spot = Vector3.new(C.X + HALF_W + 8, GY + 3, C.Z + side(ctrl.team) * (10 + (ctrl.benchNo or 0) * 3))
-	hrp.Anchored = true
-	char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, spot.Z)))
-end
-
-local function unparkCharacter(plr)
-	local char = plr.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if hrp then
-		hrp.Anchored = false
+	if phase == "serve" and currentServer() == slot then
+		placeSlot(slot, serveSpot(slot))
+	else
+		placeSlot(slot, homeSpot(slot))
 	end
 end
 
@@ -536,70 +442,51 @@ local function anyPeople()
 	return next(controllers) ~= nil
 end
 
--- A free spot on a team: the one asked for, else the first nobody has
-local function freeSlot(team, want)
-	local tm = teams[team]
-	local preferred = want and tm.slots[want]
-	if preferred and not preferred.player and not preferred.reserved then
-		return preferred
+-- Puts a person in a slot with his own character: the one asked for if an AI has it,
+-- else the first AI slot on that team, else on the other team
+local function addPlayer(plr, wantTeam, wantIndex)
+	if slotOfPlayer[plr] then
+		return slotOfPlayer[plr]
 	end
-	for _, s in tm.slots do
-		if not s.player and not s.reserved then
-			return s
-		end
-	end
-	return nil
-end
-
--- Puts a person in the match on a team. Only one person per team can switch between
--- players; anyone else on that team is locked to one player. Returns his home slot.
-local function addPlayer(plr, wantTeam, wantIndex, mode)
-	if controllers[plr] then
-		return teams[controllers[plr].team].slots[controllers[plr].home]
-	end
+	local slot
 	local order = (wantTeam == 2) and { 2, 1 } or { 1, 2 }
 	for _, t in order do
-		local slot = freeSlot(t, t == order[1] and tonumber(wantIndex) or nil)
+		local preferred = wantIndex and teams[t].slots[wantIndex]
+		if t == order[1] and preferred and preferred.isAI then
+			slot = preferred
+		end
+		for _, s in teams[t].slots do
+			if s.isAI and not slot then
+				slot = s
+			end
+		end
 		if slot then
-			local switching, count = false, 0
-			for _, c in controllers do
-				if c.team == t then
-					count += 1
-					switching = switching or c.mode == "switch"
-				end
-			end
-			controllers[plr] = {
-				team = t,
-				mode = (mode == "lock" or switching) and "lock" or "switch",
-				home = slot.index,
-				auto = true,
-				benchNo = count,
-			}
-			slot.reserved = plr
-			slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
-			if charConnections[plr] then
-				charConnections[plr]:Disconnect()
-			end
-			charConnections[plr] = plr.CharacterAdded:Connect(function(char)
-				char:WaitForChild("HumanoidRootPart", 10)
-				task.wait(0.2)
-				if controllers[plr] then
-					parkCharacter(plr)
-				end
-			end)
-			if slot.model then
-				-- joining a match that's already on
-				pilotSlot(plr, slot)
-				parkCharacter(plr)
-				if phase == "serve" and currentServer() == slot then
-					serveDeadline = now() + Config.SERVE_TIME
-				end
-			end
-			sendState()
-			return slot
+			break
 		end
 	end
-	return nil
+	if not slot then
+		return nil
+	end
+	clearBody(slot)
+	slot.isAI = false
+	slot.player = plr
+	slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
+	slotOfPlayer[plr] = slot
+	controllers[plr] = { team = slot.team, home = slot.index }
+	if charConnections[plr] then
+		charConnections[plr]:Disconnect()
+	end
+	charConnections[plr] = plr.CharacterAdded:Connect(function(char)
+		bindCharacter(slot, plr, char)
+	end)
+	if plr.Character then
+		task.spawn(bindCharacter, slot, plr, plr.Character)
+	end
+	if phase == "serve" and currentServer() == slot then
+		serveDeadline = now() + Config.SERVE_TIME
+	end
+	sendState()
+	return slot
 end
 
 local function removePlayer(plr)
@@ -607,32 +494,27 @@ local function removePlayer(plr)
 		charConnections[plr]:Disconnect()
 		charConnections[plr] = nil
 	end
-	local ctrl = controllers[plr]
-	if not ctrl then
-		return
-	end
 	controllers[plr] = nil
 	local slot = slotOfPlayer[plr]
+	if not slot then
+		return
+	end
 	slotOfPlayer[plr] = nil
-	if slot then
-		releasePilot(slot)
-	end
-	for t = 1, 2 do
-		for _, s in teams[t].slots do
-			if s.reserved == plr then
-				s.reserved = nil
-				s.override = nil
-				task.defer(dressBot, s)
-			end
-		end
-	end
-	unparkCharacter(plr)
+	slot.player = nil
+	slot.override = nil
+	-- forget the character so it isn't destroyed with the body
+	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
+	slot.isAI = true
+	slot.ai = {}
 	if matchActive and not anyPeople() then
 		stopMatch() -- nobody left playing: back to the menu
 		return
 	end
-	if phase == "serve" and slot and currentServer() == slot then
+	if phase == "serve" and currentServer() == slot then
 		serveAt = now() + 2.5
+	end
+	if matchActive then
+		task.spawn(makeBot, slot)
 	end
 	sendState()
 end

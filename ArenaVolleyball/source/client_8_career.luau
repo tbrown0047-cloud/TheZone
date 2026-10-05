@@ -44,7 +44,6 @@ end
 
 local function panel(parent, x, y, w, h)
 	local p = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.08 }, parent)
-	round(p, 10)
 	outline(p, COL.line, 1, 0.65)
 	return p
 end

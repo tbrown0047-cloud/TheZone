@@ -35,7 +35,6 @@ do
 
 	-- the bar along the bottom
 	local bar = frame({ Position = UDim2.fromOffset(74, 540), Size = UDim2.fromOffset(1132, 82), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.2, ClipsDescendants = true }, pv)
-	round(bar, 10)
 	outline(bar, COL.line, 1, 0.6)
 	local items = {
 		{ "PLAY MATCH", "ball", function()
@@ -182,7 +181,6 @@ end
 
 local function panelBox(parent, x, y, w, h)
 	local f = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.08 }, parent)
-	round(f, 10)
 	outline(f, COL.line, 1, 0.65)
 	return f
 end
@@ -215,7 +213,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 end)
 
--- P: the player you start as (and stay as, if you lock to one player)
+-- P: the player (and position) you play as
 function Menu.playAs()
 	local teamId, plan, editable = squadData()
 	local slot = table.find(plan.lineup, Menu.squadSel)
@@ -224,7 +222,7 @@ function Menu.playAs()
 	elseif editable or state.active then
 		sel.slot = slot
 		local p = Teams.squad(teamId)[Menu.squadSel]
-		Menu.toast("You'll start as " .. p.last .. " (" .. Teams.ROLES[p.role] .. ")")
+		Menu.toast("You'll play as " .. p.last .. " (" .. Teams.ROLES[p.role] .. ")")
 	end
 	Menu.refreshSquad()
 end
@@ -285,7 +283,6 @@ local function courtMarker(parent, p, index, slot, teamId, pos, plan, editable)
 	local def = Teams.list[teamId]
 	local selected = Menu.squadSel == index
 	local b = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = pos, Size = UDim2.fromOffset(112, 86), BackgroundColor3 = COL.teal, BackgroundTransparency = selected and 0.82 or 1 }, parent)
-	round(b, 8)
 	if selected then
 		outline(b, COL.teal, 2, 0)
 	end
@@ -293,7 +290,6 @@ local function courtMarker(parent, p, index, slot, teamId, pos, plan, editable)
 	text({ Position = UDim2.fromOffset(80, 6), Size = UDim2.fromOffset(30, 20), Text = tostring(p.ovr), FontFace = FONT.num, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left }, b)
 	text({ Position = UDim2.fromOffset(2, 6), Size = UDim2.fromOffset(32, 18), Text = p.role, FontFace = FONT.title, TextSize = 13, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Right }, b)
 	local tag = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(56, 52), Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = selected and COL.teal or COL.bg2, BackgroundTransparency = selected and 0 or 0.3 }, b)
-	round(tag, 11)
 	make("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, tag)
 	text({ Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, Text = p.last, FontFace = FONT.title, TextSize = 14, TextColor3 = selected and COL.ink or COL.text }, tag)
 	if plan.captain == index then
@@ -325,7 +321,6 @@ local function benchCard(parent, p, index, x, teamId, kind, editable)
 	local def = Teams.list[teamId]
 	local selected = Menu.squadSel == index
 	local b = button({ Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(86, 118), BackgroundTransparency = 0.1, BackgroundColor3 = kind == "libero" and COL.panelHi or COL.bg2 }, parent)
-	round(b, 8)
 	outline(b, selected and COL.teal or COL.line, selected and 2 or 1, selected and 0 or 0.6)
 	text({ Position = UDim2.fromOffset(0, 4), Size = UDim2.new(1, 0, 0, 14), Text = kind == "libero" and "LIBERO" or p.role, FontFace = FONT.title, TextSize = 11, TextColor3 = kind == "libero" and COL.gold or COL.teal }, b)
 	shirt(b, kind == "libero" and def.secondary or def.primary, p.number, 40, UDim2.fromOffset(43, 42))
@@ -402,19 +397,16 @@ local function playerCard(card, teamId, plan, index)
 		frame({ Position = UDim2.fromOffset(16, y - 4), Size = UDim2.fromOffset(492, 32), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.75 or 0.9 }, card)
 		text({ Position = UDim2.fromOffset(28, y), Size = UDim2.fromOffset(140, 24), Text = Teams.ATTR_NAMES[attr], FontFace = FONT.head, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left }, card)
 		local back = frame({ Position = UDim2.fromOffset(170, y + 8), Size = UDim2.fromOffset(260, 8), BackgroundColor3 = COL.bg2 }, card)
-		round(back, 4)
-		local fill = frame({ Size = UDim2.fromScale(v / 100, 1), BackgroundColor3 = ratingColor(v) }, back)
-		round(fill, 4)
+		frame({ Size = UDim2.fromScale(v / 100, 1), BackgroundColor3 = ratingColor(v) }, back)
 		text({ Position = UDim2.fromOffset(440, y), Size = UDim2.fromOffset(50, 24), Text = tostring(v), FontFace = FONT.num, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Right }, card)
 	end
-	text({ Position = UDim2.fromOffset(24, 444), Size = UDim2.fromOffset(480, 36), Text = "Drag players between the court and the bench. Press P to start as this player.", FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left }, card)
+	text({ Position = UDim2.fromOffset(24, 444), Size = UDim2.fromOffset(480, 36), Text = "Drag players between the court and the bench. Press P to play as this player.", FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left }, card)
 end
 
 local function squadTab(body, teamId, plan, editable)
 	local squad = Teams.squad(teamId)
 	local left = panelBox(body, 0, 0, 600, 492)
 	local court = frame({ Position = UDim2.fromOffset(24, 30), Size = UDim2.fromOffset(552, 290), BackgroundColor3 = Color3.fromRGB(196, 116, 58), BackgroundTransparency = 0.55 }, left)
-	round(court, 4)
 	outline(court, Color3.new(1, 1, 1), 2, 0.4)
 	frame({ Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.1 }, court)
 	frame({ Position = UDim2.new(0, 0, 0.42, 0), Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.55 }, court)
@@ -448,14 +440,12 @@ local function rotationTab(body, teamId, plan, editable)
 	for k = 1, 6 do
 		local col, row = (k - 1) % 3, (k - 1) // 3
 		local box = button({ Position = UDim2.fromOffset(col * 384, row * 250), Size = UDim2.fromOffset(368, 238), BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel }, body)
-		round(box, 10)
 		local stroke = outline(box, k == 1 and COL.teal or COL.line, k == 1 and 2 or 1, k == 1 and 0 or 0.65)
 		text({ Position = UDim2.fromOffset(16, 10), Size = UDim2.fromOffset(200, 22), Text = "ROTATION " .. k, FontFace = FONT.title, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left }, box)
 		if k == 1 then
 			Menu.chip(box, "START", UDim2.fromOffset(140, 9), COL.teal)
 		end
 		local court = frame({ Position = UDim2.fromOffset(16, 40), Size = UDim2.fromOffset(336, 150), BackgroundColor3 = Color3.fromRGB(196, 116, 58), BackgroundTransparency = 0.6 }, box)
-		round(court, 4)
 		frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.1 }, court)
 		frame({ Position = UDim2.new(0, 0, 0.45, 0), Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.5 }, court)
 		local front = {}
@@ -507,11 +497,9 @@ end
 -- a row of options to pick from
 local function segmented(parent, pos, options, chosen, width, onPick, enabled)
 	local holder = frame({ Position = pos, Size = UDim2.fromOffset(#options * width, 34), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.2 }, parent)
-	round(holder, 8)
 	for i, option in options do
 		local on = option == chosen
 		local b = button({ Position = UDim2.fromOffset((i - 1) * width + 2, 2), Size = UDim2.fromOffset(width - 4, 30), BackgroundTransparency = on and 0 or 1, BackgroundColor3 = COL.teal }, holder)
-		round(b, 6)
 		text({ Size = UDim2.fromScale(1, 1), Text = option, FontFace = FONT.title, TextSize = 14, TextColor3 = on and COL.ink or (enabled and COL.text or COL.dim) }, b)
 		b.Activated:Connect(function()
 			if enabled and not on then
@@ -527,7 +515,6 @@ local function tacticRows(parent, tactics, enabled, onChange, width)
 	for i, t in Teams.TACTICS do
 		local y = (i - 1) * 96
 		local row = frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.fromOffset(width, 88), BackgroundColor3 = COL.panelHi, BackgroundTransparency = 0.82 }, parent)
-		round(row, 8)
 		text({ Position = UDim2.fromOffset(16, 10), Size = UDim2.fromOffset(240, 22), Text = t.name, FontFace = FONT.title, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, row)
 		local segWidth = math.min(110, math.floor((width - 290) / #t.options))
 		segmented(row, UDim2.new(1, -(#t.options * segWidth) - 14, 0, 8), t.options, tactics[t.key], segWidth, function(option)
@@ -650,7 +637,6 @@ local function modal(parent, title, width, height, z)
 	z = z or 20
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.45, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = z }, parent)
 	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(width, height), BackgroundColor3 = COL.bg2, ZIndex = z + 1 }, shade)
-	round(panel, 12)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(24, 16), Size = UDim2.fromOffset(width - 48, 34), Text = title, FontFace = FONT.title, TextSize = 26, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = z + 2 }, panel)
 	local body = frame({ Position = UDim2.fromOffset(24, 62), Size = UDim2.new(1, -48, 1, -128), BackgroundTransparency = 1, ZIndex = z + 2 }, panel)
@@ -667,14 +653,12 @@ local function settingRows(body, rows, z)
 	for i, row in rows do
 		local y = (i - 1) * 44
 		local locked = row.locked
-		local strip = frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
-		round(strip, 6)
+		frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
 		text({ Position = UDim2.fromOffset(14, y), Size = UDim2.fromOffset(250, 38), Text = row[1], FontFace = FONT.head, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, body)
 		local value = text({ AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -52, 0, y), Size = UDim2.fromOffset(240, 38), Text = row[2](), FontFace = FONT.title, TextSize = 16, TextColor3 = locked and COL.dim or COL.teal }, body)
 		if not locked then
 			for k, glyph in { "◀", "▶" } do
 				local arrow = button({ AnchorPoint = Vector2.new(1, 0), Position = k == 1 and UDim2.new(1, -296, 0, y + 4) or UDim2.new(1, -6, 0, y + 4), Size = UDim2.fromOffset(34, 30), BackgroundTransparency = 0.2, BackgroundColor3 = COL.panelHi }, body)
-				round(arrow, 6)
 				text({ Size = UDim2.fromScale(1, 1), Text = glyph, FontFace = FONT.title, TextSize = 14 }, arrow)
 				arrow.Activated:Connect(function()
 					row[3](k == 1 and -1 or 1)
@@ -686,32 +670,7 @@ local function settingRows(body, rows, z)
 	zify(body, z)
 end
 
--- control choices: told to the server straight away during a match
-local function sendControl()
-	local current = myControl()
-	if current and (current.mode ~= settings.control or current.auto ~= settings.autoSwitch) then
-		remote:FireServer("control", { mode = settings.control, auto = settings.autoSwitch })
-	end
-end
-
 local CONTROL_ROWS = {
-	{ "Player control", function()
-		return settings.control == "switch" and "ANY PLAYER (SWITCH)" or "LOCKED TO ONE"
-	end, function()
-		settings.control = settings.control == "switch" and "lock" or "switch"
-		sendControl()
-	end },
-	{ "Auto switch to the ball", function()
-		return settings.autoSwitch and "ON" or "OFF"
-	end, function()
-		settings.autoSwitch = not settings.autoSwitch
-		sendControl()
-	end },
-	{ "Movement assist", function()
-		return settings.assist and "ON" or "OFF"
-	end, function()
-		settings.assist = not settings.assist
-	end },
 	{ "Camera", function()
 		return settings.camera == "broadcast" and "BROADCAST" or "BEHIND PLAYER"
 	end, function()
@@ -735,7 +694,7 @@ local CONTROL_ROWS = {
 }
 
 do
-	local shade, body = modal(board, "GAME SETTINGS", 700, 560)
+	local shade, body = modal(board, "GAME SETTINGS", 700, 440)
 	Menu.settingsShade, Menu.settingsBody = shade, body
 end
 
@@ -762,14 +721,13 @@ function Menu.openSettings()
 end
 
 do
-	local shade, body = modal(board, "CONTROLS", 760, 600)
+	local shade, body = modal(board, "CONTROLS", 760, 560)
 	Menu.controlsShade = shade
 	local rows = {
 		{ "Move", "W A S D", "LEFT STICK", "THUMBSTICK" },
 		{ "Pass  /  spike in the air", "CLICK", "R2", "HIT" },
 		{ "Set  /  tip in the air", "E", "X", "SET" },
 		{ "Jump  ·  block at the net", "SPACE", "A", "JUMP" },
-		{ "Switch player", "TAB", "L1", "SWITCH" },
 		{ "Dive", "Q or C", "B", "DIVE" },
 		{ "Ability  /  call quick set", "R  /  F", "Y  /  UP", "POWER" },
 		{ "Serve: hold, let go in the green", "HOLD CLICK", "HOLD R2", "HOLD HIT" },
@@ -781,8 +739,7 @@ do
 	end
 	for i, row in rows do
 		local y = 24 + (i - 1) * 40
-		local strip = frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
-		round(strip, 6)
+		frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
 		text({ Position = UDim2.fromOffset(12, y), Size = UDim2.fromOffset(310, 36), Text = row[1], FontFace = FONT.head, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left }, body)
 		for k = 2, 4 do
 			text({ Position = UDim2.fromOffset(330 + (k - 2) * 120, y), Size = UDim2.fromOffset(110, 36), Text = row[k], FontFace = FONT.title, TextSize = 14, TextColor3 = COL.teal }, body)
@@ -859,7 +816,6 @@ function Menu.startMatch()
 		points = sel.points,
 		sets = sel.sets,
 		team = sel.side,
-		control = settings.control,
 	})
 	task.delay(15, function()
 		if Menu.waiting and inMenu then
@@ -925,7 +881,6 @@ function Menu.openSubs()
 	end
 	local function row(y, p, index, x, bench, tag)
 		local b = button({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(296, 50), BackgroundTransparency = 0.2, BackgroundColor3 = Menu.subOut == index and COL.panelHi:Lerp(COL.teal, 0.4) or COL.panelHi, ZIndex = 33 }, list)
-		round(b, 8)
 		shirt(b, def.primary, p.number, 36, UDim2.fromOffset(28, 25))
 		text({ Position = UDim2.fromOffset(54, 0), Size = UDim2.fromOffset(150, 50), Text = p.last, FontFace = FONT.title, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, b)
 		text({ Position = UDim2.fromOffset(196, 0), Size = UDim2.fromOffset(50, 50), Text = tag or p.role, FontFace = FONT.title, TextSize = 13, TextColor3 = tag and COL.gold or COL.teal }, b)
@@ -934,7 +889,6 @@ function Menu.openSubs()
 		Drag.target(b, payload)
 		Drag.source(b, payload, function()
 			local g = frame({ Size = UDim2.fromOffset(200, 44), BackgroundColor3 = COL.teal }, nil)
-			round(g, 8)
 			text({ Size = UDim2.fromScale(1, 1), Text = "#" .. p.number .. "  " .. p.last, FontFace = FONT.title, TextSize = 17, TextColor3 = COL.ink }, g)
 			return g
 		end, function()
@@ -988,7 +942,7 @@ function Menu.openMatchTactics()
 end
 
 do
-	local shade, body = modal(matchLayer, "MATCH SETTINGS", 700, 440, 30)
+	local shade, body = modal(matchLayer, "MATCH SETTINGS", 700, 330, 30)
 	Menu.matchSettingsShade, Menu.matchSettingsBody = shade, body
 end
 
@@ -1001,7 +955,6 @@ end
 do
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, matchLayer)
 	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 490), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
-	round(panel, 12)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSED", FontFace = FONT.title, TextSize = 32, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
 	Menu.pauseBy = text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
@@ -1016,7 +969,7 @@ do
 			Menu.subOut = nil
 			Menu.openSubs()
 		end },
-		{ "CAMERA AND CONTROLS", function()
+		{ "CAMERA AND DISPLAY", function()
 			Menu.openMatchSettings()
 		end },
 		{ "QUIT TO MAIN MENU", function()
@@ -1063,7 +1016,6 @@ function openMenu(screenName)
 	task.spawn(setControls, false)
 	Controls.charging = false
 	Controls.pending = nil
-	Pilot.cue = nil
 	HUD.power = nil
 	Menu.pause.Visible = false
 	Menu.subsShade.Visible = false
@@ -1097,6 +1049,4 @@ function closeMenu()
 	Cam.mode = nil
 	Stamina.value = 100
 	HUD.refresh()
-	-- the match uses the control choices from your settings
-	sendControl()
 end

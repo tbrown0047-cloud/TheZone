@@ -37,7 +37,7 @@ local LEFT, RIGHT = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right
 do
 	local bug = frame({ Position = UDim2.fromOffset(28, 22), Size = UDim2.fromOffset(294, 52), BackgroundTransparency = 1 }, hud)
 	local setBox = frame({ Size = UDim2.fromOffset(70, 30), BackgroundColor3 = Color3.new(1, 1, 1) }, bug)
-	setBox.BackgroundColor3 = COL.teal
+	gradient(setBox, COL.teal, COL.violet, 0)
 	HUD.setLabel = text({ Size = UDim2.fromScale(1, 1), Text = "SET 1", FontFace = FONT.num, TextSize = 17, TextColor3 = COL.ink }, setBox)
 	local function teamBox(x)
 		local box = frame({ Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(74, 30), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.05 }, bug)
@@ -73,7 +73,6 @@ do
 		BackgroundColor3 = COL.bg2,
 		BackgroundTransparency = 0.3,
 	}, hud)
-	round(radar, 6)
 	outline(radar, COL.line, 1, 0.5)
 	local court = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H), BackgroundColor3 = Color3.fromRGB(214, 128, 62), BackgroundTransparency = 0.5 }, radar)
 	outline(court, Color3.new(1, 1, 1), 1, 0.3)
@@ -225,9 +224,8 @@ function HUD.setPrompts(list)
 end
 
 -- "your ball" cue
-HUD.cue = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -210), Size = UDim2.fromOffset(380, 30), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15, Visible = false }, hud)
-round(HUD.cue, 15)
-outline(HUD.cue, COL.teal, 1, 0.3)
+HUD.cue = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -210), Size = UDim2.fromOffset(380, 30), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
+gradient(HUD.cue, COL.violet, COL.bg1, 0)
 HUD.cueText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 15, RichText = true }, HUD.cue)
 HUD.cueUntil = 0
 
@@ -281,7 +279,6 @@ HUD.hitButton = touchButton("HIT", true)
 HUD.setButton = touchButton("SET")
 HUD.diveButton = touchButton("DIVE")
 HUD.abilityButton = touchButton("POWER")
-HUD.switchButton = touchButton("SWITCH")
 -- same sizes and places Roblox uses for its jump button
 local function layoutTouch()
 	local vp = workspace.CurrentCamera.ViewportSize
@@ -302,8 +299,7 @@ local function layoutTouch()
 	place(HUD.setButton, small2, 228, inner + small2 / 2)
 	place(HUD.diveButton, small2, 274, inner + small2 / 2)
 	local ring = inner + hit + 14 + outer / 2
-	place(HUD.abilityButton, outer, 200, ring)
-	place(HUD.switchButton, outer, 246, ring)
+	place(HUD.abilityButton, outer, 220, ring)
 end
 layoutTouch()
 workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(layoutTouch)
@@ -348,7 +344,6 @@ end
 -- "POWER SPIKE · #7 SILVA" when anyone uses an ability
 do
 	local notice = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, HUD.touchMode and 76 or 24), Size = UDim2.fromOffset(400, 34), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
-	round(notice, 6)
 	HUD.noticeGradient = gradient(notice, COL.violet, COL.bg1, 0)
 	HUD.noticeText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 18 }, notice)
 	HUD.notice = notice
@@ -473,7 +468,7 @@ function HUD.update(t, ballPos)
 	HUD.tag.Enabled = show
 	if show then
 		HUD.tag.Adornee = hrp
-		HUD.tagName.Text = me.number .. "  " .. me.name
+		HUD.tagName.Text = me.name
 	end
 	local stamina = math.clamp(HUD.stamina or 1, 0, 1)
 	local lowColor = stamina < 0.25 and COL.coral or Color3.fromRGB(70, 150, 255)

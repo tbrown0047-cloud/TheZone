@@ -172,9 +172,6 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		local key = (keys[lastInput] or keys.kbm)[a] or ""
 		HUD.cueText.Text = "YOUR BALL  ·  " .. (words[a] or "PLAY IT") .. "  <font color=\"#5ef2e0\">" .. key .. "</font>"
 		HUD.cueUntil = (b or serverNow()) + 0.4
-		if typeof(c) == "Vector3" and type(b) == "number" then
-			Pilot.cue = { kind = a, tc = b, cp = c } -- movement assist runs here
-		end
 	end
 end)
 

@@ -218,7 +218,6 @@ local function startCareerMatch(plr)
 				player = plr,
 				team = 1,
 				slot = slot,
-				control = "lock", -- in your career you are one player
 				override = { first = "", last = string.upper(plr.DisplayName), number = career.number, role = career.role, attrs = attrs, ovr = career.ovr, hand = "Right" },
 			},
 		},
@@ -325,8 +324,8 @@ local function tryOnlineMatch()
 		plan = a.plan,
 		awayPlan = away == b.club and b.plan or nil,
 		players = {
-			{ player = a.player, team = 1, slot = 2, control = "switch" },
-			{ player = b.player, team = 2, slot = 2, control = "switch" },
+			{ player = a.player, team = 1, slot = 2 },
+			{ player = b.player, team = 2, slot = 2 },
 		},
 	})
 end

@@ -178,7 +178,7 @@ local function setWeight(slot)
 	return w
 end
 
--- The teammate a set goes to: someone who called for it, a person locked to one player,
+-- The teammate a set goes to: someone who called for it, a person on the team,
 -- otherwise a front-row hitter picked by the team's tactics and roles
 local function partnerOf(slot)
 	local call = teams[slot.team].call
@@ -188,8 +188,7 @@ local function partnerOf(slot)
 	local options, weights, total, person = {}, {}, 0, nil
 	for _, s in teams[slot.team].slots do
 		if s ~= slot and s.root then
-			local ctrl = s.player and controllers[s.player]
-			if ctrl and ctrl.mode == "lock" and not person and roleOf(s) ~= "L" then
+			if not s.isAI and not person and roleOf(s) ~= "L" then
 				person = s
 			end
 			local w = isFrontRow(s) and setWeight(s)

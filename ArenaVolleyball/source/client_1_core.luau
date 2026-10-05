@@ -37,39 +37,37 @@ end
 
 -- your choices from the settings screen
 -- camera: "broadcast" (TV-style) or "player" (Roblox's camera behind you, with shift lock)
--- control: "switch" to control any teammate, "lock" to stay one player all match
-local settings = { camera = "broadcast", aimMarker = true, radar = true, hints = true, control = "switch", autoSwitch = true, assist = true }
+local settings = { camera = "broadcast", aimMarker = true, radar = true, hints = true }
 
 ---------------------------------------------------------------- look: colours and fonts
 
--- a calm navy base with one bright accent (teal) and coral for the opponent
 local COL = {
-	bg1 = Color3.fromRGB(16, 24, 46),
-	bg2 = Color3.fromRGB(8, 12, 26),
-	panel = Color3.fromRGB(21, 31, 58),
-	panelHi = Color3.fromRGB(34, 49, 88),
-	line = Color3.fromRGB(78, 98, 150),
-	teal = Color3.fromRGB(46, 222, 192),
-	cyan = Color3.fromRGB(226, 236, 255),
-	pink = Color3.fromRGB(255, 84, 140),
-	coral = Color3.fromRGB(255, 108, 96),
-	violet = Color3.fromRGB(84, 124, 255),
-	lime = Color3.fromRGB(176, 232, 104),
-	text = Color3.fromRGB(240, 244, 252),
-	dim = Color3.fromRGB(146, 160, 196),
-	ink = Color3.fromRGB(10, 14, 28),
-	win = Color3.fromRGB(64, 204, 120),
-	loss = Color3.fromRGB(232, 72, 80),
-	gold = Color3.fromRGB(255, 198, 66),
+	bg1 = Color3.fromRGB(44, 30, 122),
+	bg2 = Color3.fromRGB(18, 16, 64),
+	panel = Color3.fromRGB(26, 22, 90),
+	panelHi = Color3.fromRGB(48, 40, 140),
+	line = Color3.fromRGB(124, 134, 255),
+	teal = Color3.fromRGB(94, 242, 224),
+	cyan = Color3.fromRGB(176, 238, 255),
+	pink = Color3.fromRGB(255, 84, 204),
+	coral = Color3.fromRGB(255, 100, 96),
+	violet = Color3.fromRGB(150, 98, 255),
+	lime = Color3.fromRGB(214, 255, 60),
+	text = Color3.fromRGB(242, 244, 255),
+	dim = Color3.fromRGB(162, 168, 214),
+	ink = Color3.fromRGB(18, 16, 48),
+	win = Color3.fromRGB(64, 204, 96),
+	loss = Color3.fromRGB(232, 64, 72),
+	gold = Color3.fromRGB(255, 212, 80),
 }
 
 local function family(name, weight)
 	return Font.new("rbxasset://fonts/families/" .. name .. ".json", weight)
 end
 local FONT = {
-	title = family("BuilderSans", Enum.FontWeight.Bold),
-	head = family("BuilderSans", Enum.FontWeight.Medium),
-	body = family("BuilderSans", Enum.FontWeight.Regular),
+	title = family("RobotoCondensed", Enum.FontWeight.Bold),
+	head = family("RobotoCondensed", Enum.FontWeight.Medium),
+	body = family("RobotoCondensed", Enum.FontWeight.Regular),
 	num = family("Oswald", Enum.FontWeight.Medium),
 }
 
@@ -146,18 +144,18 @@ local function gradient(o, c1, c2, rotation, t1, t2)
 	}, o)
 end
 
--- the main call-to-action button: solid accent, dark label
+-- the main call-to-action button: the violet bar from the menus
 local function primaryButton(props, parent, label, textSize)
 	local b = button(props, parent)
 	b.BackgroundTransparency = 0
-	b.BackgroundColor3 = COL.teal
-	round(b, 8)
-	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 20, TextColor3 = COL.ink, ZIndex = b.ZIndex + 1 }, b)
+	b.BackgroundColor3 = Color3.new(1, 1, 1)
+	local g = gradient(b, COL.violet, Color3.fromRGB(110, 70, 230), 0)
+	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 20, ZIndex = b.ZIndex + 1 }, b)
 	b.MouseEnter:Connect(function()
-		b.BackgroundColor3 = COL.teal:Lerp(Color3.new(1, 1, 1), 0.25)
+		g.Color = ColorSequence.new(COL.violet:Lerp(Color3.new(1, 1, 1), 0.2), Color3.fromRGB(130, 90, 245))
 	end)
 	b.MouseLeave:Connect(function()
-		b.BackgroundColor3 = COL.teal
+		g.Color = ColorSequence.new(COL.violet, Color3.fromRGB(110, 70, 230))
 	end)
 	return b, l
 end
@@ -167,7 +165,6 @@ local function secondaryButton(props, parent, label, textSize)
 	local b = button(props, parent)
 	b.BackgroundTransparency = 0
 	b.BackgroundColor3 = COL.panelHi
-	round(b, 8)
 	outline(b, COL.line, 1, 0.5)
 	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 18, ZIndex = b.ZIndex + 1 }, b)
 	b.MouseEnter:Connect(function()
@@ -497,14 +494,9 @@ local function myServe()
 	return state.phase == "serve" and state.server == player.UserId
 end
 
--- the body you're controlling right now (never your own character during a match)
+-- you play with your own character
 local function controlledModel()
-	local e = myEntry()
-	local model = e and e.model
-	if model and model.Parent then
-		return model
-	end
-	return nil
+	return player.Character
 end
 
 local function character()

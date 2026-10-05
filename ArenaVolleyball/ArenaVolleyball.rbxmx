@@ -274,11 +274,8 @@ for t = 1, 2 do
 		teams[t].slots[i] = { team = t, index = i, isAI = true, ai = {} }
 	end
 end
--- People never play with their own Roblox character: each one controls an AI body on
--- his team. In "switch" mode he jumps to whoever plays the ball next (or presses the
--- switch key); in "lock" mode he keeps one player all match.
-local slotOfPlayer = {} -- the body each person is controlling right now
-local controllers = {} -- person -> { team, mode = "switch" | "lock", home = slot index, auto = bool }
+local slotOfPlayer = {} -- the slot each person plays in (with his own character)
+local controllers = {} -- people in the match: { team, home = slot index }
 local charConnections = {}
 
 local function tactic(team, key)
@@ -680,119 +677,28 @@ local function animateBot(slot)
 end
 
 local function clearBody(slot)
-	if slot.model then
+	if slot.isAI and slot.model then
 		slot.model:Destroy()
 	end
 	slot.model, slot.humanoid, slot.root, slot.tracks, slot.anim, slot.align = nil, nil, nil, nil, nil, nil
 	slot.ai = {}
 end
 
----------------------------------------------------------------- people controlling bodies
-
--- What a person's body can do: a little quicker than the AI so it feels responsive
-local function pilotSpeed(slot)
-	return 17 + 4 * attr01(slot, "PHY")
-end
-
--- Hands a body back to the AI
-local function releasePilot(slot)
-	if not slot or not slot.player then
+local function bindCharacter(slot, plr, char)
+	local hum = char:WaitForChild("Humanoid", 10)
+	local hrp = char:WaitForChild("HumanoidRootPart", 10)
+	if slot.player ~= plr or not hum or not hrp then
 		return
 	end
-	slot.player = nil
-	slot.isAI = true
-	slot.ai = { vel = Vector3.zero, pace = slot.ai and slot.ai.pace or 1, drift = slot.ai and slot.ai.drift or 0 }
-	if slot.root then
-		pcall(function()
-			slot.root:SetNetworkOwner(nil)
-		end)
-	end
-	if slot.humanoid then
-		slot.humanoid.AutoRotate = false
-		slot.humanoid:Move(Vector3.zero)
-	end
-	if slot.align then
-		slot.align.Enabled = true
-	end
-end
-
--- Gives a person control of a body: its physics runs on his screen so it moves at once
-local function pilotSlot(plr, slot)
-	if not slot or not slot.model or (slot.player and slot.player ~= plr) then
-		return nil
-	end
-	if slot.player == plr then
-		return slot
-	end
-	local old = slotOfPlayer[plr]
-	if old then
-		releasePilot(old)
-	end
-	slot.player = plr
-	slot.isAI = false
-	slotOfPlayer[plr] = slot
-	if slot.humanoid then
-		slot.humanoid.AutoRotate = true
-		slot.humanoid.WalkSpeed = pilotSpeed(slot)
-		slot.humanoid:Move(Vector3.zero)
-	end
-	if slot.align then
-		slot.align.Enabled = false
-	end
-	if slot.root then
-		pcall(function()
-			slot.root:SetNetworkOwner(plr)
-		end)
-	end
-	sendState()
-	return slot
-end
-
--- In switch mode, a person follows the play: he takes over whoever plays the ball next
-local function autoSwitch(team, slot)
-	if not slot or slot.player or not slot.model then
+	slot.model, slot.humanoid, slot.root = char, hum, hrp
+	task.wait(0.15)
+	if slot.player ~= plr or slot.model ~= char then
 		return
 	end
-	for plr, ctrl in controllers do
-		if ctrl.team == team and ctrl.mode == "switch" and ctrl.auto ~= false and slotOfPlayer[plr] ~= slot then
-			pilotSlot(plr, slot)
-			return
-		end
-	end
-end
-
--- The free teammate nearest a point (for the switch key)
-local function nearestFree(team, point, exclude, plr)
-	local best, bestD = nil, math.huge
-	for _, s in teams[team].slots do
-		if s ~= exclude and not s.player and s.root and (s.reserved == nil or s.reserved == plr) then
-			local d = flatDist(s.root.Position, point)
-			if d < bestD then
-				best, bestD = s, d
-			end
-		end
-	end
-	return best
-end
-
--- Your own character waits on the bench like a coach while you play
-local function parkCharacter(plr)
-	local ctrl = controllers[plr]
-	local char = plr.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if not ctrl or not hrp then
-		return
-	end
-	local spot = Vector3.new(C.X + HALF_W + 8, GY + 3, C.Z + side(ctrl.team) * (10 + (ctrl.benchNo or 0) * 3))
-	hrp.Anchored = true
-	char:PivotTo(CFrame.lookAt(spot, Vector3.new(C.X, spot.Y, spot.Z)))
-end
-
-local function unparkCharacter(plr)
-	local char = plr.Character
-	local hrp = char and char:FindFirstChild("HumanoidRootPart")
-	if hrp then
-		hrp.Anchored = false
+	if phase == "serve" and currentServer() == slot then
+		placeSlot(slot, serveSpot(slot))
+	else
+		placeSlot(slot, homeSpot(slot))
 	end
 end
 
@@ -800,70 +706,51 @@ local function anyPeople()
 	return next(controllers) ~= nil
 end
 
--- A free spot on a team: the one asked for, else the first nobody has
-local function freeSlot(team, want)
-	local tm = teams[team]
-	local preferred = want and tm.slots[want]
-	if preferred and not preferred.player and not preferred.reserved then
-		return preferred
+-- Puts a person in a slot with his own character: the one asked for if an AI has it,
+-- else the first AI slot on that team, else on the other team
+local function addPlayer(plr, wantTeam, wantIndex)
+	if slotOfPlayer[plr] then
+		return slotOfPlayer[plr]
 	end
-	for _, s in tm.slots do
-		if not s.player and not s.reserved then
-			return s
-		end
-	end
-	return nil
-end
-
--- Puts a person in the match on a team. Only one person per team can switch between
--- players; anyone else on that team is locked to one player. Returns his home slot.
-local function addPlayer(plr, wantTeam, wantIndex, mode)
-	if controllers[plr] then
-		return teams[controllers[plr].team].slots[controllers[plr].home]
-	end
+	local slot
 	local order = (wantTeam == 2) and { 2, 1 } or { 1, 2 }
 	for _, t in order do
-		local slot = freeSlot(t, t == order[1] and tonumber(wantIndex) or nil)
+		local preferred = wantIndex and teams[t].slots[wantIndex]
+		if t == order[1] and preferred and preferred.isAI then
+			slot = preferred
+		end
+		for _, s in teams[t].slots do
+			if s.isAI and not slot then
+				slot = s
+			end
+		end
 		if slot then
-			local switching, count = false, 0
-			for _, c in controllers do
-				if c.team == t then
-					count += 1
-					switching = switching or c.mode == "switch"
-				end
-			end
-			controllers[plr] = {
-				team = t,
-				mode = (mode == "lock" or switching) and "lock" or "switch",
-				home = slot.index,
-				auto = true,
-				benchNo = count,
-			}
-			slot.reserved = plr
-			slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
-			if charConnections[plr] then
-				charConnections[plr]:Disconnect()
-			end
-			charConnections[plr] = plr.CharacterAdded:Connect(function(char)
-				char:WaitForChild("HumanoidRootPart", 10)
-				task.wait(0.2)
-				if controllers[plr] then
-					parkCharacter(plr)
-				end
-			end)
-			if slot.model then
-				-- joining a match that's already on
-				pilotSlot(plr, slot)
-				parkCharacter(plr)
-				if phase == "serve" and currentServer() == slot then
-					serveDeadline = now() + Config.SERVE_TIME
-				end
-			end
-			sendState()
-			return slot
+			break
 		end
 	end
-	return nil
+	if not slot then
+		return nil
+	end
+	clearBody(slot)
+	slot.isAI = false
+	slot.player = plr
+	slot.stats = slot.stats or { kills = 0, aces = 0, blocks = 0, digs = 0 }
+	slotOfPlayer[plr] = slot
+	controllers[plr] = { team = slot.team, home = slot.index }
+	if charConnections[plr] then
+		charConnections[plr]:Disconnect()
+	end
+	charConnections[plr] = plr.CharacterAdded:Connect(function(char)
+		bindCharacter(slot, plr, char)
+	end)
+	if plr.Character then
+		task.spawn(bindCharacter, slot, plr, plr.Character)
+	end
+	if phase == "serve" and currentServer() == slot then
+		serveDeadline = now() + Config.SERVE_TIME
+	end
+	sendState()
+	return slot
 end
 
 local function removePlayer(plr)
@@ -871,32 +758,27 @@ local function removePlayer(plr)
 		charConnections[plr]:Disconnect()
 		charConnections[plr] = nil
 	end
-	local ctrl = controllers[plr]
-	if not ctrl then
-		return
-	end
 	controllers[plr] = nil
 	local slot = slotOfPlayer[plr]
+	if not slot then
+		return
+	end
 	slotOfPlayer[plr] = nil
-	if slot then
-		releasePilot(slot)
-	end
-	for t = 1, 2 do
-		for _, s in teams[t].slots do
-			if s.reserved == plr then
-				s.reserved = nil
-				s.override = nil
-				task.defer(dressBot, s)
-			end
-		end
-	end
-	unparkCharacter(plr)
+	slot.player = nil
+	slot.override = nil
+	-- forget the character so it isn't destroyed with the body
+	slot.model, slot.humanoid, slot.root, slot.align = nil, nil, nil, nil
+	slot.isAI = true
+	slot.ai = {}
 	if matchActive and not anyPeople() then
 		stopMatch() -- nobody left playing: back to the menu
 		return
 	end
-	if phase == "serve" and slot and currentServer() == slot then
+	if phase == "serve" and currentServer() == slot then
 		serveAt = now() + 2.5
+	end
+	if matchActive then
+		task.spawn(makeBot, slot)
 	end
 	sendState()
 end
@@ -1080,7 +962,7 @@ local function setWeight(slot)
 	return w
 end
 
--- The teammate a set goes to: someone who called for it, a person locked to one player,
+-- The teammate a set goes to: someone who called for it, a person on the team,
 -- otherwise a front-row hitter picked by the team's tactics and roles
 local function partnerOf(slot)
 	local call = teams[slot.team].call
@@ -1090,8 +972,7 @@ local function partnerOf(slot)
 	local options, weights, total, person = {}, {}, 0, nil
 	for _, s in teams[slot.team].slots do
 		if s ~= slot and s.root then
-			local ctrl = s.player and controllers[s.player]
-			if ctrl and ctrl.mode == "lock" and not person and roleOf(s) ~= "L" then
+			if not s.isAI and not person and roleOf(s) ~= "L" then
 				person = s
 			end
 			local w = isFrontRow(s) and setWeight(s)
@@ -1627,7 +1508,7 @@ function sendState(plr)
 	-- who is playing, by user id as text (remote tables need text keys)
 	local controls = {}
 	for person, ctrl in controllers do
-		controls[tostring(person.UserId)] = { team = ctrl.team, mode = ctrl.mode, home = ctrl.home, auto = ctrl.auto ~= false }
+		controls[tostring(person.UserId)] = { team = ctrl.team, home = ctrl.home }
 	end
 	local roster = { {}, {} }
 	for t = 1, 2 do
@@ -1638,7 +1519,7 @@ function sendState(plr)
 			table.insert(roster[t], {
 				index = s.index,
 				squad = index,
-				name = p and p.last or "PLAYER",
+				name = s.player and string.upper(s.player.DisplayName) or (p and p.last or "PLAYER"),
 				ctrl = s.player and s.player.DisplayName or nil,
 				captain = teams[t].plan and index == teams[t].plan.captain and p and p.role ~= "L" or nil,
 				rot = rotationPos(s),
@@ -1719,7 +1600,6 @@ function setupServe()
 	srv.ai.jumpServe = rng:NextNumber() < teamAI(srv.team).jumpServe * styleJump * (0.6 + 0.8 * attr01(srv, "SRV"))
 	srv.ai.serveJumped = false
 	srv.ai.prepped = false
-	autoSwitch(srv.team, srv) -- in switch mode you serve for your team
 	sendBall()
 	sendState()
 end
@@ -1766,24 +1646,25 @@ function stopMatch()
 	ball.live = false
 	ball.mode = "hidden"
 	ball.holder = nil
-	for plr in controllers do
-		if charConnections[plr] then
-			charConnections[plr]:Disconnect()
-			charConnections[plr] = nil
-		end
-		unparkCharacter(plr)
-		moveOffCourt(plr)
-	end
-	table.clear(controllers)
-	table.clear(slotOfPlayer)
 	for t = 1, 2 do
 		for _, s in teams[t].slots do
-			s.player, s.reserved = nil, nil
-			s.isAI = true
+			local plr = s.player
+			if plr then
+				if charConnections[plr] then
+					charConnections[plr]:Disconnect()
+					charConnections[plr] = nil
+				end
+				-- forget the person's character before clearing, so it isn't destroyed
+				s.player, s.model, s.humanoid, s.root, s.align = nil, nil, nil, nil, nil
+				s.isAI = true
+				moveOffCourt(plr)
+			end
 			s.override, s.meter, s.boost = nil, 0, nil
 			clearBody(s)
 		end
 	end
+	table.clear(controllers)
+	table.clear(slotOfPlayer)
 	sendBall()
 	sendState()
 	if finished and context and onMatchFinished then
@@ -2112,7 +1993,6 @@ local function planRally(team, t, brain)
 				cp = ballPos(tc)
 			end
 			brain.kind, brain.tc, brain.cp, brain.who = kind, tc, cp, who
-			autoSwitch(team, who) -- in switch mode you take over whoever plays it
 			if who and who.player then
 				remote:FireClient(who.player, "cue", (n == 3 and kind == "bump") and "over" or kind, tc, cp)
 			end
@@ -2200,14 +2080,6 @@ local function planRally(team, t, brain)
 			if brain.blockId ~= ball.id then
 				brain.blockId = ball.id
 				brain.blockGo = rng:NextNumber() < ai.blockTry
-				-- in switch mode you take the front-row blocker nearest the attack
-				local nearest, bestX = nil, math.huge
-				for _, sl in tm.slots do
-					if sl.root and isFrontRow(sl) and roleOf(sl) ~= "L" and math.abs(sl.root.Position.X - cpo.X) < bestX then
-						nearest, bestX = sl, math.abs(sl.root.Position.X - cpo.X)
-					end
-				end
-				autoSwitch(team, nearest)
 			end
 			local blockers = {}
 			if brain.blockGo then
@@ -2293,25 +2165,20 @@ local function aiTeam(team, t, dt)
 	end
 	brain.orders = orders
 	for _, sl in tm.slots do
-		if sl.humanoid and sl.root then
-			if sl.isAI then
-				steer(sl, orders[sl] or { pos = homeSpot(sl) }, t, dt, lookAt)
-			end
-			animateBot(sl) -- bodies people control are animated here too
+		if sl.isAI and sl.humanoid and sl.root then
+			steer(sl, orders[sl] or { pos = homeSpot(sl) }, t, dt, lookAt)
+			animateBot(sl)
 		end
 	end
 end
 
 ---------------------------------------------------------------- starting and joining from the menu
 
--- spec: { mode, home, away, plan, points, sets, players = { { player, team, slot, override, control } } }
+-- spec: { mode, home, away, plan, points, sets, players = { { player, team, slot, override } } }
 local function beginMatch(spec)
 	for t = 1, 2 do
 		for _, sl in teams[t].slots do
-			clearBody(sl)
-			sl.player, sl.reserved, sl.override = nil, nil, nil
-			sl.isAI = true
-			sl.meter, sl.boost = 0, nil
+			sl.override, sl.meter, sl.boost = nil, 0, nil
 		end
 	end
 	configureTeams(spec.home, spec.away, spec.plan, spec.awayPlan)
@@ -2321,21 +2188,24 @@ local function beginMatch(spec)
 	matchActive = true
 	phase = "setup"
 	for _, entry in spec.players do
-		local slot = addPlayer(entry.player, entry.team, entry.slot, entry.control)
+		local slot = addPlayer(entry.player, entry.team, entry.slot)
 		if slot then
 			slot.override = entry.override
 		end
 	end
 
-	-- a body for every player, built together
+	-- AI bodies for everyone else, built together
 	local building = 0
 	for t = 1, 2 do
 		for _, sl in teams[t].slots do
-			building += 1
-			task.spawn(function()
-				makeBot(sl)
-				building -= 1
-			end)
+			if sl.isAI then
+				clearBody(sl)
+				building += 1
+				task.spawn(function()
+					makeBot(sl)
+					building -= 1
+				end)
+			end
 		end
 	end
 	sendState()
@@ -2345,14 +2215,6 @@ local function beginMatch(spec)
 	end
 	if not matchActive then
 		return
-	end
-	-- everyone takes control of his player; characters wait on the bench
-	for plr, ctrl in controllers do
-		local home = teams[ctrl.team].slots[ctrl.home]
-		if not pilotSlot(plr, home) then
-			pilotSlot(plr, nearestFree(ctrl.team, C, nil, plr))
-		end
-		parkCharacter(plr)
 	end
 	startMatch()
 end
@@ -2376,7 +2238,6 @@ local function quickPlay(plr, data)
 			player = plr,
 			team = 1,
 			slot = math.clamp(math.floor(tonumber(data.slot) or 2), 1, TEAM_SIZE),
-			control = data.control == "lock" and "lock" or "switch",
 		} },
 	})
 end
@@ -2399,20 +2260,9 @@ local function substitute(plr, data)
 		return
 	end
 	local target = team.slots[at]
-	if (target.reserved and target.reserved ~= plr) or (target.player and target.player ~= plr) then
-		remote:FireClient(plr, "notice", "Another player is controlling him")
+	if not target.isAI then
+		remote:FireClient(plr, "notice", "People can't be substituted")
 		return
-	end
-	if ctrl.mode == "lock" and target.index == ctrl.home then
-		remote:FireClient(plr, "notice", "You can't take off the player you're locked to")
-		return
-	end
-	if target.player == plr then
-		-- you were on this body: move to a teammate while he goes off
-		local other = nearestFree(ctrl.team, target.root and target.root.Position or C, target, plr)
-		if not other or not pilotSlot(plr, other) then
-			return
-		end
 	end
 	local lineup = table.clone(team.lineup)
 	lineup[at] = inIndex
@@ -2445,7 +2295,7 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		if not controllers[plr] then
 			if matchActive then
-				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot), data.control)
+				addPlayer(plr, tonumber(data.team) == 2 and 2 or 1, tonumber(data.slot))
 			else
 				quickPlay(plr, data)
 			end
@@ -2484,38 +2334,6 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 		team.plan = Teams.cleanPlan(team.defId, plan)
 		applyPlan(ctrl.team)
-		sendState()
-		return
-	elseif action == "control" then
-		-- switch between players, or lock to the one you have now
-		if data.mode == "lock" then
-			local current = slotOfPlayer[plr]
-			if current and (not current.reserved or current.reserved == plr) then
-				for _, s in teams[ctrl.team].slots do
-					if s.reserved == plr then
-						s.reserved = nil
-					end
-				end
-				current.reserved = plr
-				ctrl.home = current.index
-			end
-			ctrl.mode = "lock"
-		elseif data.mode == "switch" then
-			local taken = false
-			for other, c in controllers do
-				if other ~= plr and c.team == ctrl.team and c.mode == "switch" then
-					taken = true
-				end
-			end
-			if taken then
-				remote:FireClient(plr, "notice", "A teammate is already switching between players")
-			else
-				ctrl.mode = "switch"
-			end
-		end
-		if data.auto ~= nil then
-			ctrl.auto = data.auto == true
-		end
 		sendState()
 		return
 	end
@@ -2583,17 +2401,6 @@ remote.OnServerEvent:Connect(function(plr, action, data)
 		end
 	elseif action == "ability" then
 		activateAbility(slot)
-	elseif action == "switch" then
-		if ctrl.mode == "switch" then
-			local point = ball.mode == "fly" and ballPos(t) or ball.restPos
-			local target = tonumber(data.index) and teams[ctrl.team].slots[tonumber(data.index)]
-			if not target or target.player or (target.reserved and target.reserved ~= plr) then
-				target = nearestFree(ctrl.team, point, slot, plr)
-			end
-			pilotSlot(plr, target)
-		else
-			remote:FireClient(plr, "notice", "You're locked to one player (change it in the pause menu)")
-		end
 	elseif action == "call" then
 		-- calling for a quick set: the next set comes to you, fast and low
 		teams[slot.team].call = { slot = slot, untilT = t + 4 }
@@ -2984,7 +2791,6 @@ local function startCareerMatch(plr)
 				player = plr,
 				team = 1,
 				slot = slot,
-				control = "lock", -- in your career you are one player
 				override = { first = "", last = string.upper(plr.DisplayName), number = career.number, role = career.role, attrs = attrs, ovr = career.ovr, hand = "Right" },
 			},
 		},
@@ -3091,8 +2897,8 @@ local function tryOnlineMatch()
 		plan = a.plan,
 		awayPlan = away == b.club and b.plan or nil,
 		players = {
-			{ player = a.player, team = 1, slot = 2, control = "switch" },
-			{ player = b.player, team = 2, slot = 2, control = "switch" },
+			{ player = a.player, team = 1, slot = 2 },
+			{ player = b.player, team = 2, slot = 2 },
 		},
 	})
 end
@@ -3605,39 +3411,37 @@ end
 
 -- your choices from the settings screen
 -- camera: "broadcast" (TV-style) or "player" (Roblox's camera behind you, with shift lock)
--- control: "switch" to control any teammate, "lock" to stay one player all match
-local settings = { camera = "broadcast", aimMarker = true, radar = true, hints = true, control = "switch", autoSwitch = true, assist = true }
+local settings = { camera = "broadcast", aimMarker = true, radar = true, hints = true }
 
 ---------------------------------------------------------------- look: colours and fonts
 
--- a calm navy base with one bright accent (teal) and coral for the opponent
 local COL = {
-	bg1 = Color3.fromRGB(16, 24, 46),
-	bg2 = Color3.fromRGB(8, 12, 26),
-	panel = Color3.fromRGB(21, 31, 58),
-	panelHi = Color3.fromRGB(34, 49, 88),
-	line = Color3.fromRGB(78, 98, 150),
-	teal = Color3.fromRGB(46, 222, 192),
-	cyan = Color3.fromRGB(226, 236, 255),
-	pink = Color3.fromRGB(255, 84, 140),
-	coral = Color3.fromRGB(255, 108, 96),
-	violet = Color3.fromRGB(84, 124, 255),
-	lime = Color3.fromRGB(176, 232, 104),
-	text = Color3.fromRGB(240, 244, 252),
-	dim = Color3.fromRGB(146, 160, 196),
-	ink = Color3.fromRGB(10, 14, 28),
-	win = Color3.fromRGB(64, 204, 120),
-	loss = Color3.fromRGB(232, 72, 80),
-	gold = Color3.fromRGB(255, 198, 66),
+	bg1 = Color3.fromRGB(44, 30, 122),
+	bg2 = Color3.fromRGB(18, 16, 64),
+	panel = Color3.fromRGB(26, 22, 90),
+	panelHi = Color3.fromRGB(48, 40, 140),
+	line = Color3.fromRGB(124, 134, 255),
+	teal = Color3.fromRGB(94, 242, 224),
+	cyan = Color3.fromRGB(176, 238, 255),
+	pink = Color3.fromRGB(255, 84, 204),
+	coral = Color3.fromRGB(255, 100, 96),
+	violet = Color3.fromRGB(150, 98, 255),
+	lime = Color3.fromRGB(214, 255, 60),
+	text = Color3.fromRGB(242, 244, 255),
+	dim = Color3.fromRGB(162, 168, 214),
+	ink = Color3.fromRGB(18, 16, 48),
+	win = Color3.fromRGB(64, 204, 96),
+	loss = Color3.fromRGB(232, 64, 72),
+	gold = Color3.fromRGB(255, 212, 80),
 }
 
 local function family(name, weight)
 	return Font.new("rbxasset://fonts/families/" .. name .. ".json", weight)
 end
 local FONT = {
-	title = family("BuilderSans", Enum.FontWeight.Bold),
-	head = family("BuilderSans", Enum.FontWeight.Medium),
-	body = family("BuilderSans", Enum.FontWeight.Regular),
+	title = family("RobotoCondensed", Enum.FontWeight.Bold),
+	head = family("RobotoCondensed", Enum.FontWeight.Medium),
+	body = family("RobotoCondensed", Enum.FontWeight.Regular),
 	num = family("Oswald", Enum.FontWeight.Medium),
 }
 
@@ -3714,18 +3518,18 @@ local function gradient(o, c1, c2, rotation, t1, t2)
 	}, o)
 end
 
--- the main call-to-action button: solid accent, dark label
+-- the main call-to-action button: the violet bar from the menus
 local function primaryButton(props, parent, label, textSize)
 	local b = button(props, parent)
 	b.BackgroundTransparency = 0
-	b.BackgroundColor3 = COL.teal
-	round(b, 8)
-	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 20, TextColor3 = COL.ink, ZIndex = b.ZIndex + 1 }, b)
+	b.BackgroundColor3 = Color3.new(1, 1, 1)
+	local g = gradient(b, COL.violet, Color3.fromRGB(110, 70, 230), 0)
+	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 20, ZIndex = b.ZIndex + 1 }, b)
 	b.MouseEnter:Connect(function()
-		b.BackgroundColor3 = COL.teal:Lerp(Color3.new(1, 1, 1), 0.25)
+		g.Color = ColorSequence.new(COL.violet:Lerp(Color3.new(1, 1, 1), 0.2), Color3.fromRGB(130, 90, 245))
 	end)
 	b.MouseLeave:Connect(function()
-		b.BackgroundColor3 = COL.teal
+		g.Color = ColorSequence.new(COL.violet, Color3.fromRGB(110, 70, 230))
 	end)
 	return b, l
 end
@@ -3735,7 +3539,6 @@ local function secondaryButton(props, parent, label, textSize)
 	local b = button(props, parent)
 	b.BackgroundTransparency = 0
 	b.BackgroundColor3 = COL.panelHi
-	round(b, 8)
 	outline(b, COL.line, 1, 0.5)
 	local l = text({ Size = UDim2.fromScale(1, 1), Text = label, FontFace = FONT.title, TextSize = textSize or 18, ZIndex = b.ZIndex + 1 }, b)
 	b.MouseEnter:Connect(function()
@@ -4065,14 +3868,9 @@ local function myServe()
 	return state.phase == "serve" and state.server == player.UserId
 end
 
--- the body you're controlling right now (never your own character during a match)
+-- you play with your own character
 local function controlledModel()
-	local e = myEntry()
-	local model = e and e.model
-	if model and model.Parent then
-		return model
-	end
-	return nil
+	return player.Character
 end
 
 local function character()
@@ -4166,7 +3964,7 @@ local LEFT, RIGHT = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right
 do
 	local bug = frame({ Position = UDim2.fromOffset(28, 22), Size = UDim2.fromOffset(294, 52), BackgroundTransparency = 1 }, hud)
 	local setBox = frame({ Size = UDim2.fromOffset(70, 30), BackgroundColor3 = Color3.new(1, 1, 1) }, bug)
-	setBox.BackgroundColor3 = COL.teal
+	gradient(setBox, COL.teal, COL.violet, 0)
 	HUD.setLabel = text({ Size = UDim2.fromScale(1, 1), Text = "SET 1", FontFace = FONT.num, TextSize = 17, TextColor3 = COL.ink }, setBox)
 	local function teamBox(x)
 		local box = frame({ Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(74, 30), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.05 }, bug)
@@ -4202,7 +4000,6 @@ do
 		BackgroundColor3 = COL.bg2,
 		BackgroundTransparency = 0.3,
 	}, hud)
-	round(radar, 6)
 	outline(radar, COL.line, 1, 0.5)
 	local court = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(W, H), BackgroundColor3 = Color3.fromRGB(214, 128, 62), BackgroundTransparency = 0.5 }, radar)
 	outline(court, Color3.new(1, 1, 1), 1, 0.3)
@@ -4354,9 +4151,8 @@ function HUD.setPrompts(list)
 end
 
 -- "your ball" cue
-HUD.cue = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -210), Size = UDim2.fromOffset(380, 30), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.15, Visible = false }, hud)
-round(HUD.cue, 15)
-outline(HUD.cue, COL.teal, 1, 0.3)
+HUD.cue = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -210), Size = UDim2.fromOffset(380, 30), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
+gradient(HUD.cue, COL.violet, COL.bg1, 0)
 HUD.cueText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 15, RichText = true }, HUD.cue)
 HUD.cueUntil = 0
 
@@ -4410,7 +4206,6 @@ HUD.hitButton = touchButton("HIT", true)
 HUD.setButton = touchButton("SET")
 HUD.diveButton = touchButton("DIVE")
 HUD.abilityButton = touchButton("POWER")
-HUD.switchButton = touchButton("SWITCH")
 -- same sizes and places Roblox uses for its jump button
 local function layoutTouch()
 	local vp = workspace.CurrentCamera.ViewportSize
@@ -4431,8 +4226,7 @@ local function layoutTouch()
 	place(HUD.setButton, small2, 228, inner + small2 / 2)
 	place(HUD.diveButton, small2, 274, inner + small2 / 2)
 	local ring = inner + hit + 14 + outer / 2
-	place(HUD.abilityButton, outer, 200, ring)
-	place(HUD.switchButton, outer, 246, ring)
+	place(HUD.abilityButton, outer, 220, ring)
 end
 layoutTouch()
 workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(layoutTouch)
@@ -4477,7 +4271,6 @@ end
 -- "POWER SPIKE · #7 SILVA" when anyone uses an ability
 do
 	local notice = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, HUD.touchMode and 76 or 24), Size = UDim2.fromOffset(400, 34), BackgroundColor3 = Color3.new(1, 1, 1), Visible = false }, hud)
-	round(notice, 6)
 	HUD.noticeGradient = gradient(notice, COL.violet, COL.bg1, 0)
 	HUD.noticeText = text({ Size = UDim2.fromScale(1, 1), FontFace = FONT.title, TextSize = 18 }, notice)
 	HUD.notice = notice
@@ -4602,7 +4395,7 @@ function HUD.update(t, ballPos)
 	HUD.tag.Enabled = show
 	if show then
 		HUD.tag.Adornee = hrp
-		HUD.tagName.Text = me.number .. "  " .. me.name
+		HUD.tagName.Text = me.name
 	end
 	local stamina = math.clamp(HUD.stamina or 1, 0, 1)
 	local lowColor = stamina < 0.25 and COL.coral or Color3.fromRGB(70, 150, 255)
@@ -5035,87 +4828,40 @@ local function setBall()
 	end
 end
 
----------------------------------------------------------------- stamina
--- Jumping and diving use it and it comes back on the ground. Tired legs don't jump as
--- high, and with too little left you can't jump at all.
+---------------------------------------------------------------- stamina and jumping
+-- Jumping and diving use stamina and it comes back on the ground. Tired legs don't jump
+-- as high; with too little left you can't jump, and you can't jump again straight
+-- after landing (no bunny hopping).
 
 local Stamina = { value = 100 }
 local JUMP_COST, REPEAT_COST, DIVE_COST = 14, 10, 20
+local Pilot = { lastAir = false, landedAt = 0, lastJump = 0, tiredNote = 0, base = setmetatable({}, { __mode = "k" }) }
 
-function Stamina.update(dt, hum)
-	if hum and not airborne(hum) then
-		local still = hum.MoveDirection.Magnitude < 0.1
-		Stamina.value = math.min(100, Stamina.value + (still and 14 or 8) * dt)
-	end
-	if hum then
-		local scale = (Stamina.value < 25 and not inMenu) and 0.78 or 1
-		hum.UseJumpPower = true
-		hum.JumpPower = 50 * scale
-	end
-	HUD.stamina = Stamina.value / 100
-end
-
----------------------------------------------------------------- moving the player you control
--- Your body is an AI player's, so it is moved here from the normal movement keys,
--- stick or thumbstick, relative to the camera. With movement assist on, he runs to the
--- ball by himself when it's his to play and you aren't steering.
-
-local Pilot = { lastAir = false, landedAt = 0, lastJump = 0, cue = nil, tiredNote = 0 }
-
-local function moveInput()
-	local ok, vector = pcall(function()
-		local module = require(player:WaitForChild("PlayerScripts"):WaitForChild("PlayerModule"))
-		return module:GetControls():GetMoveVector()
-	end)
-	if ok and typeof(vector) == "Vector3" then
-		return vector
-	end
-	-- fallback: read the keys and the stick ourselves
-	local x, z = 0, 0
-	if UserInputService:IsKeyDown(Enum.KeyCode.W) then z -= 1 end
-	if UserInputService:IsKeyDown(Enum.KeyCode.S) then z += 1 end
-	if UserInputService:IsKeyDown(Enum.KeyCode.A) then x -= 1 end
-	if UserInputService:IsKeyDown(Enum.KeyCode.D) then x += 1 end
-	for _, input in UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1) do
-		if input.KeyCode == Enum.KeyCode.Thumbstick1 and input.Position.Magnitude > 0.2 then
-			x, z = input.Position.X, -input.Position.Y
-		end
-	end
-	return Vector3.new(x, 0, z)
-end
-
--- a jump: only from the ground, not straight after landing, and only with stamina left
-function Pilot.jump()
+UserInputService.JumpRequest:Connect(function()
 	local hum = character()
-	if inMenu or state.paused or not hum or airborne(hum) then
+	if inMenu or not hum or airborne(hum) then
 		return
 	end
-	if os.clock() - Pilot.landedAt < 0.4 then
-		return -- no bunny hopping
+	if Stamina.value < JUMP_COST and os.clock() - Pilot.tiredNote > 1.5 then
+		Pilot.tiredNote = os.clock()
+		HUD.flash("TOO TIRED TO JUMP", COL.coral)
 	end
-	if Stamina.value < JUMP_COST then
-		if os.clock() - Pilot.tiredNote > 1.5 then
-			Pilot.tiredNote = os.clock()
-			HUD.flash("TOO TIRED TO JUMP", COL.coral)
-		end
-		return
-	end
-	hum.Jump = true
-end
+end)
 
-UserInputService.JumpRequest:Connect(Pilot.jump)
-
+-- runs every frame on your character; returns its humanoid
 function Pilot.update(dt)
 	local hum, hrp = character()
-	if inMenu or not hum or not hrp then
+	if not hum or not hrp then
 		Pilot.lastAir = false
-		return hum
+		return nil
 	end
-	-- jump costs: taking off, more for jumping again soon after
+	if not Pilot.base[hum] then
+		Pilot.base[hum] = { power = hum.JumpPower, height = hum.JumpHeight }
+	end
 	local air = airborne(hum)
 	if air and not Pilot.lastAir then
-		local again = os.clock() - Pilot.lastJump < 1.6
-		if hrp.AssemblyLinearVelocity.Y > 5 then
+		if hrp.AssemblyLinearVelocity.Y > 5 and not inMenu then
+			local again = os.clock() - Pilot.lastJump < 1.6
 			Stamina.value = math.max(0, Stamina.value - JUMP_COST - (again and REPEAT_COST or 0))
 			Pilot.lastJump = os.clock()
 		end
@@ -5123,48 +4869,24 @@ function Pilot.update(dt)
 		Pilot.landedAt = os.clock()
 	end
 	Pilot.lastAir = air
-	if state.paused then
-		hum:Move(Vector3.zero)
-		return hum
-	end
-
-	local raw = moveInput()
-	local move = Vector3.zero
-	if raw.Magnitude > 0.05 then
-		local cf = workspace.CurrentCamera.CFrame
-		local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
-		local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
-		if forward.Magnitude > 0.01 and right.Magnitude > 0.01 then
-			move = right.Unit * raw.X + forward.Unit * -raw.Z
-			if move.Magnitude > 1 then
-				move = move.Unit
-			end
-		end
-	elseif settings.assist and Pilot.cue and serverNow() < Pilot.cue.tc + 0.15 and os.clock() > Controls.diveUntil then
-		-- movement assist: run to where the ball will be
-		local target = Pilot.cue.cp
-		local team = myTeam()
-		if Pilot.cue.kind == "spike" then
-			target += Vector3.new(0, 0, (team == 1 and 1 or -1) * 1.2) -- a step back from the ball to hit it
-		end
-		local off = Vector3.new(target.X - hrp.Position.X, 0, target.Z - hrp.Position.Z)
-		if off.Magnitude > 0.8 then
-			move = off.Unit * math.clamp(off.Magnitude / 2.5, 0.35, 1)
-		end
-	end
-	hum:Move(move, false)
-
-	-- shift lock: face where the camera looks
-	local locked = settings.camera == "player" and UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
-	hum.AutoRotate = not locked
-	if locked then
-		local look = workspace.CurrentCamera.CFrame.LookVector
-		local flat = Vector3.new(look.X, 0, look.Z)
-		if flat.Magnitude > 0.01 then
-			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + flat.Unit)
-		end
-	end
+	-- jumping is switched off for a moment after landing, and when you're out of stamina
+	local canJump = inMenu or (os.clock() - Pilot.landedAt >= 0.4 and Stamina.value >= JUMP_COST)
+	hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, canJump)
 	return hum
+end
+
+function Stamina.update(dt, hum)
+	if hum and not airborne(hum) then
+		local still = hum.MoveDirection.Magnitude < 0.1
+		Stamina.value = math.min(100, Stamina.value + (still and 14 or 8) * dt)
+	end
+	local base = hum and Pilot.base[hum]
+	if base then
+		local scale = (Stamina.value < 25 and not inMenu) and 0.78 or 1
+		hum.JumpPower = base.power * scale
+		hum.JumpHeight = base.height * scale
+	end
+	HUD.stamina = Stamina.value / 100
 end
 
 local function dive()
@@ -5202,18 +4924,6 @@ local function dive()
 	end)
 end
 
-local function switchPlayer()
-	local ctrl = myControl()
-	if inMenu or state.paused or not ctrl then
-		return
-	end
-	if ctrl.mode ~= "switch" then
-		HUD.flash("LOCKED TO ONE PLAYER", COL.dim)
-		return
-	end
-	remote:FireServer("switch", {})
-end
-
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed or inMenu then
 		return
@@ -5229,8 +4939,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		remote:FireServer("ability", {})
 	elseif key == Enum.KeyCode.F or key == Enum.KeyCode.DPadUp then
 		remote:FireServer("call", {})
-	elseif key == Enum.KeyCode.Tab or key == Enum.KeyCode.ButtonL1 then
-		switchPlayer()
 	elseif key == Enum.KeyCode.V then
 		settings.camera = settings.camera == "broadcast" and "player" or "broadcast"
 	elseif input.UserInputType == Enum.UserInputType.MouseButton1 or key == Enum.KeyCode.ButtonR2 then
@@ -5252,11 +4960,10 @@ HUD.hitButton.MouseButton1Down:Connect(press)
 HUD.hitButton.MouseButton1Up:Connect(release)
 HUD.setButton.MouseButton1Down:Connect(setBall)
 HUD.diveButton.MouseButton1Down:Connect(dive)
-HUD.switchButton.MouseButton1Down:Connect(switchPlayer)
 
 ---------------------------------------------------------------- cameras
 -- BROADCAST: a low chase camera behind your team that follows the play.
--- BEHIND PLAYER (V): Roblox's own camera on the player you control, with shift lock.
+-- BEHIND PLAYER (V): Roblox's own camera on your character, with shift lock.
 
 local Cam = { focus = nil, zoom = 1, ready = false, shakeUntil = 0, shakePower = 0, mode = nil }
 
@@ -5284,13 +4991,13 @@ function Cam.update(dt, ballPos)
 	local team = myTeam()
 	local hum, hrp = character()
 	if team == 0 or not hrp or settings.camera == "player" then
-		-- Roblox's camera on whoever you control (shift lock works here)
+		-- Roblox's own camera (shift lock works here)
 		if Cam.mode ~= "player" then
 			Cam.mode = "player"
 			cam.CameraType = Enum.CameraType.Custom
 			cam.FieldOfView = 70
 		end
-		local subject = hum or (player.Character and player.Character:FindFirstChildOfClass("Humanoid"))
+		local subject = hum
 		if subject and cam.CameraSubject ~= subject then
 			cam.CameraSubject = subject
 		end
@@ -5329,8 +5036,6 @@ local function updatePrompts()
 		return
 	end
 	local pad = lastInput == "pad"
-	local ctrl = myControl()
-	local switching = ctrl and ctrl.mode == "switch"
 	if myServe() then
 		local left = math.max(0, math.ceil(state.deadline - serverNow()))
 		HUD.setPrompts({
@@ -5345,7 +5050,7 @@ local function updatePrompts()
 			{ pad and "R2" or "CLICK", "Pass · spike in the air" },
 			{ pad and "X" or "E", "Set · tip in the air" },
 			{ pad and "A" or "SPACE", "Jump · block at the net" },
-			switching and { pad and "L1" or "TAB", "Switch player" } or { pad and "B" or "Q", "Dive" },
+			{ pad and "B" or "Q", "Dive" },
 			ready and { pad and "Y" or "R", (me.ability or "Ability") .. " ready!" } or { pad and "UP" or "F", "Call for a quick set" },
 		})
 	else
@@ -5392,16 +5097,29 @@ pcall(function()
 	Menu.gui.ScreenInsets = Enum.ScreenInsets.CoreUISafeInsets
 end)
 
--- background: a deep navy gradient with a soft light from the top (it reaches past the
--- safe area so it fills the whole screen)
+-- background: deep purple with neon swooshes, on its own full-screen layer
 do
-	local bg = frame({ Position = UDim2.new(0, -300, 0, -300), Size = UDim2.new(1, 600, 1, 600), BackgroundColor3 = Color3.new(1, 1, 1) }, Menu.gui)
-	gradient(bg, COL.bg1, COL.bg2, 90)
-	local glow = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 300), Size = UDim2.new(0.8, 0, 0.45, 0), BackgroundColor3 = COL.violet, BackgroundTransparency = 0.82 }, bg)
-	make("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(0, 1) }, glow)
-	round(glow, 400)
-	local floorLine = frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -300), Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = COL.teal, BackgroundTransparency = 0.7 }, bg)
-	make("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1) }) }, floorLine)
+	local bgGui = make("ScreenGui", { Name = "VolleyballMenuBackground", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 4 }, player:WaitForChild("PlayerGui"))
+	Menu.gui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		bgGui.Enabled = Menu.gui.Enabled
+	end)
+	local bg = frame({ Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1) }, bgGui)
+	gradient(bg, COL.bg1, COL.bg2, 35)
+	local floorGlow = frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.3), BackgroundColor3 = Color3.fromRGB(10, 8, 40) }, bg)
+	make("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(1, 0.25) }, floorGlow)
+	local streaks = {
+		{ 0.16, 0.2, 0.8, 0.04, COL.teal, 0.2 },
+		{ 0.06, 0.32, 0.7, 0.07, COL.pink, 0.4 },
+		{ 0.22, 0.1, 0.95, 0.012, COL.cyan, 0.3 },
+		{ 0.66, 0.12, 0.7, 0.025, COL.violet, 0.5 },
+		{ 0.8, 0.74, 0.6, 0.016, COL.teal, 0.55 },
+		{ 0.3, 0.9, 0.9, 0.01, COL.pink, 0.5 },
+	}
+	for _, st in streaks do
+		local f = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(st[1], st[2]), Size = UDim2.fromScale(st[3], st[4]), Rotation = -28, BackgroundColor3 = st[5], BackgroundTransparency = st[6] }, bg)
+		make("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1) }) }, f)
+		round(f, 40)
+	end
 end
 
 -- everything is laid out on a 1280 x 720 board scaled to the screen
@@ -5461,14 +5179,13 @@ end)
 ---------------------------------------------------------------- menu building blocks
 
 function Menu.tile(parent, pos, size, onClick)
-	local t = button({ Position = pos, Size = size, BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel, ClipsDescendants = true }, parent)
-	round(t, 10)
-	local stroke = outline(t, COL.line, 1, 0.65)
+	local t = button({ Position = pos, Size = size, BackgroundTransparency = 0.12, BackgroundColor3 = COL.panel, ClipsDescendants = true }, parent)
+	local stroke = outline(t, COL.line, 1, 0.45)
 	t.MouseEnter:Connect(function()
 		stroke.Color, stroke.Transparency, stroke.Thickness = COL.teal, 0, 2
 	end)
 	t.MouseLeave:Connect(function()
-		stroke.Color, stroke.Transparency, stroke.Thickness = COL.line, 0.65, 1
+		stroke.Color, stroke.Transparency, stroke.Thickness = COL.line, 0.45, 1
 	end)
 	if onClick then
 		t.Activated:Connect(onClick)
@@ -5491,8 +5208,8 @@ function Menu.title(parent, str, size, pos)
 end
 
 function Menu.chip(parent, label, pos, color, textColor)
-	local c = frame({ Position = pos, Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = color or COL.teal }, parent)
-	round(c, 12)
+	local c = frame({ Position = pos, Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = color or COL.gold }, parent)
+	round(c, 3)
 	make("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, c)
 	text({ Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, Text = label, FontFace = FONT.title, TextSize = 12, TextColor3 = textColor or COL.ink }, c)
 	return c
@@ -5502,14 +5219,12 @@ local TABS = { "HOME", "PLAY", "ONLINE", "CUSTOMISE" }
 local TAB_SCREEN = { "home", "play", "online", "customise" }
 function Menu.tabs(parent, pos, names, active, onPick, width)
 	width = width or 112
-	local bar = frame({ Position = pos, Size = UDim2.fromOffset(#names * width, 34), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.4 }, parent)
-	round(bar, 8)
+	local bar = frame({ Position = pos, Size = UDim2.fromOffset(#names * width, 32), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.35 }, parent)
 	for i, name in names do
-		local b = button({ Position = UDim2.fromOffset((i - 1) * width, 0), Size = UDim2.fromOffset(width, 34), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i == active and 0 or 1 }, bar)
-		round(b, 8)
-		text({ Size = UDim2.fromScale(1, 1), Text = name, FontFace = FONT.title, TextSize = 16, TextColor3 = i == active and COL.text or COL.dim }, b)
+		local b = button({ Position = UDim2.fromOffset((i - 1) * width, 0), Size = UDim2.fromOffset(width, 32), BackgroundColor3 = COL.bg2, BackgroundTransparency = i == active and 0.05 or 1 }, bar)
+		text({ Size = UDim2.fromScale(1, 1), Text = name, FontFace = FONT.head, TextSize = 19, TextColor3 = i == active and COL.teal or COL.text }, b)
 		if i == active then
-			frame({ AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 1), Size = UDim2.new(1, -24, 0, 3), BackgroundColor3 = COL.teal }, b)
+			frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = COL.coral }, b)
 		end
 		b.Activated:Connect(function()
 			onPick(i)
@@ -5613,7 +5328,7 @@ local toast = text({
 	TextTransparency = 1,
 	ZIndex = 40,
 }, Menu.gui)
-round(toast, 19)
+round(toast, 6)
 make("UIPadding", { PaddingLeft = UDim.new(0, 20), PaddingRight = UDim.new(0, 20) }, toast)
 function Menu.toast(message)
 	toast.Text = message
@@ -5801,7 +5516,7 @@ do
 	end)
 	career.BackgroundColor3 = Color3.new(1, 1, 1)
 	career.BackgroundTransparency = 0
-	gradient(career, COL.panelHi, COL.panel, 90)
+	gradient(career, Color3.fromRGB(30, 150, 160), COL.bg1, 115)
 	Menu.careerArt = Menu.avatar(career, { Position = UDim2.fromOffset(0, 62), Size = UDim2.new(1, 0, 1, -62) }, -0.25)
 	text({ Position = UDim2.fromOffset(0, 10), Size = UDim2.new(1, 0, 0, 46), Text = "CAREER", FontFace = FONT.num, TextSize = 46, TextColor3 = COL.teal, TextStrokeTransparency = 0.6 }, career)
 	text({ Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 0, 14), Text = "M  O  D  E", FontFace = FONT.title, TextSize = 12 }, career)
@@ -5840,13 +5555,12 @@ do
 	}, live)
 
 	-- settings, where the accessibility button sits
-	local settingsButton = button({ Position = UDim2.fromOffset(76, 540), Size = UDim2.fromOffset(180, 60), BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel }, home)
-	round(settingsButton, 10)
-	outline(settingsButton, COL.line, 1, 0.65)
+	local settingsButton = button({ Position = UDim2.fromOffset(76, 540), Size = UDim2.fromOffset(180, 60), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1) }, home)
+	gradient(settingsButton, COL.violet, Color3.fromRGB(110, 70, 230), 0)
 	local disc = frame({ Position = UDim2.fromOffset(12, 12), Size = UDim2.fromOffset(36, 36), BackgroundColor3 = COL.teal }, settingsButton)
 	round(disc, 18)
 	Menu.icon(disc, "sliders", 20, COL.ink, UDim2.fromScale(0.5, 0.5))
-	text({ Position = UDim2.fromOffset(58, 0), Size = UDim2.fromOffset(110, 60), Text = "SETTINGS", FontFace = FONT.title, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left }, settingsButton)
+	text({ Position = UDim2.fromOffset(58, 0), Size = UDim2.fromOffset(110, 60), Text = "SETTINGS", FontFace = FONT.head, TextSize = 19, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, settingsButton)
 	settingsButton.Activated:Connect(function()
 		Menu.openSettings()
 	end)
@@ -5971,9 +5685,8 @@ do
 	Menu.tsSub = text({ Position = UDim2.fromOffset(72, 80), Size = UDim2.fromOffset(700, 22), Text = "TEAM SELECT", FontFace = FONT.head, TextSize = 18, TextColor3 = COL.dim, TextXAlignment = Enum.TextXAlignment.Left }, ts)
 
 	local function panel(x)
-		local p = button({ Position = UDim2.fromOffset(x, 124), Size = UDim2.fromOffset(460, 440), BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel }, ts)
-		round(p, 10)
-		local stroke = outline(p, COL.line, 1, 0.65)
+		local p = button({ Position = UDim2.fromOffset(x, 124), Size = UDim2.fromOffset(460, 440), BackgroundTransparency = 0.12, BackgroundColor3 = COL.panel }, ts)
+		local stroke = outline(p, COL.line, 1, 0.45)
 		local content = frame({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, p)
 		return { button = p, stroke = stroke, content = content }
 	end
@@ -6016,7 +5729,7 @@ local function fillTeamPanel(panel, id, header, accent, canChange, onStep, chose
 	local c = panel.content
 	c:ClearAllChildren()
 	panel.stroke.Color = chosen and COL.teal or COL.line
-	panel.stroke.Transparency = chosen and 0 or 0.65
+	panel.stroke.Transparency = chosen and 0 or 0.45
 	panel.stroke.Thickness = chosen and 2 or 1
 	local def = Teams.list[id]
 	local ratings = Teams.ratings(id)
@@ -6024,8 +5737,8 @@ local function fillTeamPanel(panel, id, header, accent, canChange, onStep, chose
 	badge(c, id, 116, UDim2.fromOffset(230, 50), Vector2.new(0.5, 0))
 	if canChange then
 		for k, glyph in { "◀", "▶" } do
-			local arrow = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(k == 1 and 60 or 400, 108), Size = UDim2.fromOffset(44, 56), BackgroundTransparency = 0.2, BackgroundColor3 = COL.panelHi }, c)
-			round(arrow, 8)
+			local arrow = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(k == 1 and 60 or 400, 108), Size = UDim2.fromOffset(46, 60), BackgroundTransparency = 0.3, BackgroundColor3 = COL.panelHi }, c)
+			round(arrow, 6)
 			text({ Size = UDim2.fromScale(1, 1), Text = glyph, FontFace = FONT.title, TextSize = 24 }, arrow)
 			arrow.Activated:Connect(function()
 				onStep(k == 1 and -1 or 1)
@@ -6122,7 +5835,6 @@ do
 
 	-- the bar along the bottom
 	local bar = frame({ Position = UDim2.fromOffset(74, 540), Size = UDim2.fromOffset(1132, 82), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.2, ClipsDescendants = true }, pv)
-	round(bar, 10)
 	outline(bar, COL.line, 1, 0.6)
 	local items = {
 		{ "PLAY MATCH", "ball", function()
@@ -6269,7 +5981,6 @@ end
 
 local function panelBox(parent, x, y, w, h)
 	local f = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.08 }, parent)
-	round(f, 10)
 	outline(f, COL.line, 1, 0.65)
 	return f
 end
@@ -6302,7 +6013,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 end)
 
--- P: the player you start as (and stay as, if you lock to one player)
+-- P: the player (and position) you play as
 function Menu.playAs()
 	local teamId, plan, editable = squadData()
 	local slot = table.find(plan.lineup, Menu.squadSel)
@@ -6311,7 +6022,7 @@ function Menu.playAs()
 	elseif editable or state.active then
 		sel.slot = slot
 		local p = Teams.squad(teamId)[Menu.squadSel]
-		Menu.toast("You'll start as " .. p.last .. " (" .. Teams.ROLES[p.role] .. ")")
+		Menu.toast("You'll play as " .. p.last .. " (" .. Teams.ROLES[p.role] .. ")")
 	end
 	Menu.refreshSquad()
 end
@@ -6372,7 +6083,6 @@ local function courtMarker(parent, p, index, slot, teamId, pos, plan, editable)
 	local def = Teams.list[teamId]
 	local selected = Menu.squadSel == index
 	local b = button({ AnchorPoint = Vector2.new(0.5, 0.5), Position = pos, Size = UDim2.fromOffset(112, 86), BackgroundColor3 = COL.teal, BackgroundTransparency = selected and 0.82 or 1 }, parent)
-	round(b, 8)
 	if selected then
 		outline(b, COL.teal, 2, 0)
 	end
@@ -6380,7 +6090,6 @@ local function courtMarker(parent, p, index, slot, teamId, pos, plan, editable)
 	text({ Position = UDim2.fromOffset(80, 6), Size = UDim2.fromOffset(30, 20), Text = tostring(p.ovr), FontFace = FONT.num, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left }, b)
 	text({ Position = UDim2.fromOffset(2, 6), Size = UDim2.fromOffset(32, 18), Text = p.role, FontFace = FONT.title, TextSize = 13, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Right }, b)
 	local tag = frame({ AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.fromOffset(56, 52), Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = selected and COL.teal or COL.bg2, BackgroundTransparency = selected and 0 or 0.3 }, b)
-	round(tag, 11)
 	make("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8) }, tag)
 	text({ Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, Text = p.last, FontFace = FONT.title, TextSize = 14, TextColor3 = selected and COL.ink or COL.text }, tag)
 	if plan.captain == index then
@@ -6412,7 +6121,6 @@ local function benchCard(parent, p, index, x, teamId, kind, editable)
 	local def = Teams.list[teamId]
 	local selected = Menu.squadSel == index
 	local b = button({ Position = UDim2.fromOffset(x, 0), Size = UDim2.fromOffset(86, 118), BackgroundTransparency = 0.1, BackgroundColor3 = kind == "libero" and COL.panelHi or COL.bg2 }, parent)
-	round(b, 8)
 	outline(b, selected and COL.teal or COL.line, selected and 2 or 1, selected and 0 or 0.6)
 	text({ Position = UDim2.fromOffset(0, 4), Size = UDim2.new(1, 0, 0, 14), Text = kind == "libero" and "LIBERO" or p.role, FontFace = FONT.title, TextSize = 11, TextColor3 = kind == "libero" and COL.gold or COL.teal }, b)
 	shirt(b, kind == "libero" and def.secondary or def.primary, p.number, 40, UDim2.fromOffset(43, 42))
@@ -6489,19 +6197,16 @@ local function playerCard(card, teamId, plan, index)
 		frame({ Position = UDim2.fromOffset(16, y - 4), Size = UDim2.fromOffset(492, 32), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.75 or 0.9 }, card)
 		text({ Position = UDim2.fromOffset(28, y), Size = UDim2.fromOffset(140, 24), Text = Teams.ATTR_NAMES[attr], FontFace = FONT.head, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left }, card)
 		local back = frame({ Position = UDim2.fromOffset(170, y + 8), Size = UDim2.fromOffset(260, 8), BackgroundColor3 = COL.bg2 }, card)
-		round(back, 4)
-		local fill = frame({ Size = UDim2.fromScale(v / 100, 1), BackgroundColor3 = ratingColor(v) }, back)
-		round(fill, 4)
+		frame({ Size = UDim2.fromScale(v / 100, 1), BackgroundColor3 = ratingColor(v) }, back)
 		text({ Position = UDim2.fromOffset(440, y), Size = UDim2.fromOffset(50, 24), Text = tostring(v), FontFace = FONT.num, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Right }, card)
 	end
-	text({ Position = UDim2.fromOffset(24, 444), Size = UDim2.fromOffset(480, 36), Text = "Drag players between the court and the bench. Press P to start as this player.", FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left }, card)
+	text({ Position = UDim2.fromOffset(24, 444), Size = UDim2.fromOffset(480, 36), Text = "Drag players between the court and the bench. Press P to play as this player.", FontFace = FONT.head, TextSize = 14, TextColor3 = COL.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left }, card)
 end
 
 local function squadTab(body, teamId, plan, editable)
 	local squad = Teams.squad(teamId)
 	local left = panelBox(body, 0, 0, 600, 492)
 	local court = frame({ Position = UDim2.fromOffset(24, 30), Size = UDim2.fromOffset(552, 290), BackgroundColor3 = Color3.fromRGB(196, 116, 58), BackgroundTransparency = 0.55 }, left)
-	round(court, 4)
 	outline(court, Color3.new(1, 1, 1), 2, 0.4)
 	frame({ Size = UDim2.new(1, 0, 0, 4), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.1 }, court)
 	frame({ Position = UDim2.new(0, 0, 0.42, 0), Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.55 }, court)
@@ -6535,14 +6240,12 @@ local function rotationTab(body, teamId, plan, editable)
 	for k = 1, 6 do
 		local col, row = (k - 1) % 3, (k - 1) // 3
 		local box = button({ Position = UDim2.fromOffset(col * 384, row * 250), Size = UDim2.fromOffset(368, 238), BackgroundTransparency = 0.08, BackgroundColor3 = COL.panel }, body)
-		round(box, 10)
 		local stroke = outline(box, k == 1 and COL.teal or COL.line, k == 1 and 2 or 1, k == 1 and 0 or 0.65)
 		text({ Position = UDim2.fromOffset(16, 10), Size = UDim2.fromOffset(200, 22), Text = "ROTATION " .. k, FontFace = FONT.title, TextSize = 18, TextXAlignment = Enum.TextXAlignment.Left }, box)
 		if k == 1 then
 			Menu.chip(box, "START", UDim2.fromOffset(140, 9), COL.teal)
 		end
 		local court = frame({ Position = UDim2.fromOffset(16, 40), Size = UDim2.fromOffset(336, 150), BackgroundColor3 = Color3.fromRGB(196, 116, 58), BackgroundTransparency = 0.6 }, box)
-		round(court, 4)
 		frame({ Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.1 }, court)
 		frame({ Position = UDim2.new(0, 0, 0.45, 0), Size = UDim2.new(1, 0, 0, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.5 }, court)
 		local front = {}
@@ -6594,11 +6297,9 @@ end
 -- a row of options to pick from
 local function segmented(parent, pos, options, chosen, width, onPick, enabled)
 	local holder = frame({ Position = pos, Size = UDim2.fromOffset(#options * width, 34), BackgroundColor3 = COL.bg2, BackgroundTransparency = 0.2 }, parent)
-	round(holder, 8)
 	for i, option in options do
 		local on = option == chosen
 		local b = button({ Position = UDim2.fromOffset((i - 1) * width + 2, 2), Size = UDim2.fromOffset(width - 4, 30), BackgroundTransparency = on and 0 or 1, BackgroundColor3 = COL.teal }, holder)
-		round(b, 6)
 		text({ Size = UDim2.fromScale(1, 1), Text = option, FontFace = FONT.title, TextSize = 14, TextColor3 = on and COL.ink or (enabled and COL.text or COL.dim) }, b)
 		b.Activated:Connect(function()
 			if enabled and not on then
@@ -6614,7 +6315,6 @@ local function tacticRows(parent, tactics, enabled, onChange, width)
 	for i, t in Teams.TACTICS do
 		local y = (i - 1) * 96
 		local row = frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.fromOffset(width, 88), BackgroundColor3 = COL.panelHi, BackgroundTransparency = 0.82 }, parent)
-		round(row, 8)
 		text({ Position = UDim2.fromOffset(16, 10), Size = UDim2.fromOffset(240, 22), Text = t.name, FontFace = FONT.title, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, row)
 		local segWidth = math.min(110, math.floor((width - 290) / #t.options))
 		segmented(row, UDim2.new(1, -(#t.options * segWidth) - 14, 0, 8), t.options, tactics[t.key], segWidth, function(option)
@@ -6737,7 +6437,6 @@ local function modal(parent, title, width, height, z)
 	z = z or 20
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.45, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = z }, parent)
 	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(width, height), BackgroundColor3 = COL.bg2, ZIndex = z + 1 }, shade)
-	round(panel, 12)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(24, 16), Size = UDim2.fromOffset(width - 48, 34), Text = title, FontFace = FONT.title, TextSize = 26, TextColor3 = COL.cyan, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = z + 2 }, panel)
 	local body = frame({ Position = UDim2.fromOffset(24, 62), Size = UDim2.new(1, -48, 1, -128), BackgroundTransparency = 1, ZIndex = z + 2 }, panel)
@@ -6754,14 +6453,12 @@ local function settingRows(body, rows, z)
 	for i, row in rows do
 		local y = (i - 1) * 44
 		local locked = row.locked
-		local strip = frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
-		round(strip, 6)
+		frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
 		text({ Position = UDim2.fromOffset(14, y), Size = UDim2.fromOffset(250, 38), Text = row[1], FontFace = FONT.head, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, body)
 		local value = text({ AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -52, 0, y), Size = UDim2.fromOffset(240, 38), Text = row[2](), FontFace = FONT.title, TextSize = 16, TextColor3 = locked and COL.dim or COL.teal }, body)
 		if not locked then
 			for k, glyph in { "◀", "▶" } do
 				local arrow = button({ AnchorPoint = Vector2.new(1, 0), Position = k == 1 and UDim2.new(1, -296, 0, y + 4) or UDim2.new(1, -6, 0, y + 4), Size = UDim2.fromOffset(34, 30), BackgroundTransparency = 0.2, BackgroundColor3 = COL.panelHi }, body)
-				round(arrow, 6)
 				text({ Size = UDim2.fromScale(1, 1), Text = glyph, FontFace = FONT.title, TextSize = 14 }, arrow)
 				arrow.Activated:Connect(function()
 					row[3](k == 1 and -1 or 1)
@@ -6773,32 +6470,7 @@ local function settingRows(body, rows, z)
 	zify(body, z)
 end
 
--- control choices: told to the server straight away during a match
-local function sendControl()
-	local current = myControl()
-	if current and (current.mode ~= settings.control or current.auto ~= settings.autoSwitch) then
-		remote:FireServer("control", { mode = settings.control, auto = settings.autoSwitch })
-	end
-end
-
 local CONTROL_ROWS = {
-	{ "Player control", function()
-		return settings.control == "switch" and "ANY PLAYER (SWITCH)" or "LOCKED TO ONE"
-	end, function()
-		settings.control = settings.control == "switch" and "lock" or "switch"
-		sendControl()
-	end },
-	{ "Auto switch to the ball", function()
-		return settings.autoSwitch and "ON" or "OFF"
-	end, function()
-		settings.autoSwitch = not settings.autoSwitch
-		sendControl()
-	end },
-	{ "Movement assist", function()
-		return settings.assist and "ON" or "OFF"
-	end, function()
-		settings.assist = not settings.assist
-	end },
 	{ "Camera", function()
 		return settings.camera == "broadcast" and "BROADCAST" or "BEHIND PLAYER"
 	end, function()
@@ -6822,7 +6494,7 @@ local CONTROL_ROWS = {
 }
 
 do
-	local shade, body = modal(board, "GAME SETTINGS", 700, 560)
+	local shade, body = modal(board, "GAME SETTINGS", 700, 440)
 	Menu.settingsShade, Menu.settingsBody = shade, body
 end
 
@@ -6849,14 +6521,13 @@ function Menu.openSettings()
 end
 
 do
-	local shade, body = modal(board, "CONTROLS", 760, 600)
+	local shade, body = modal(board, "CONTROLS", 760, 560)
 	Menu.controlsShade = shade
 	local rows = {
 		{ "Move", "W A S D", "LEFT STICK", "THUMBSTICK" },
 		{ "Pass  /  spike in the air", "CLICK", "R2", "HIT" },
 		{ "Set  /  tip in the air", "E", "X", "SET" },
 		{ "Jump  ·  block at the net", "SPACE", "A", "JUMP" },
-		{ "Switch player", "TAB", "L1", "SWITCH" },
 		{ "Dive", "Q or C", "B", "DIVE" },
 		{ "Ability  /  call quick set", "R  /  F", "Y  /  UP", "POWER" },
 		{ "Serve: hold, let go in the green", "HOLD CLICK", "HOLD R2", "HOLD HIT" },
@@ -6868,8 +6539,7 @@ do
 	end
 	for i, row in rows do
 		local y = 24 + (i - 1) * 40
-		local strip = frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
-		round(strip, 6)
+		frame({ Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, 36), BackgroundColor3 = COL.panelHi, BackgroundTransparency = i % 2 == 0 and 0.7 or 0.85 }, body)
 		text({ Position = UDim2.fromOffset(12, y), Size = UDim2.fromOffset(310, 36), Text = row[1], FontFace = FONT.head, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left }, body)
 		for k = 2, 4 do
 			text({ Position = UDim2.fromOffset(330 + (k - 2) * 120, y), Size = UDim2.fromOffset(110, 36), Text = row[k], FontFace = FONT.title, TextSize = 14, TextColor3 = COL.teal }, body)
@@ -6946,7 +6616,6 @@ function Menu.startMatch()
 		points = sel.points,
 		sets = sel.sets,
 		team = sel.side,
-		control = settings.control,
 	})
 	task.delay(15, function()
 		if Menu.waiting and inMenu then
@@ -7012,7 +6681,6 @@ function Menu.openSubs()
 	end
 	local function row(y, p, index, x, bench, tag)
 		local b = button({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(296, 50), BackgroundTransparency = 0.2, BackgroundColor3 = Menu.subOut == index and COL.panelHi:Lerp(COL.teal, 0.4) or COL.panelHi, ZIndex = 33 }, list)
-		round(b, 8)
 		shirt(b, def.primary, p.number, 36, UDim2.fromOffset(28, 25))
 		text({ Position = UDim2.fromOffset(54, 0), Size = UDim2.fromOffset(150, 50), Text = p.last, FontFace = FONT.title, TextSize = 17, TextXAlignment = Enum.TextXAlignment.Left }, b)
 		text({ Position = UDim2.fromOffset(196, 0), Size = UDim2.fromOffset(50, 50), Text = tag or p.role, FontFace = FONT.title, TextSize = 13, TextColor3 = tag and COL.gold or COL.teal }, b)
@@ -7021,7 +6689,6 @@ function Menu.openSubs()
 		Drag.target(b, payload)
 		Drag.source(b, payload, function()
 			local g = frame({ Size = UDim2.fromOffset(200, 44), BackgroundColor3 = COL.teal }, nil)
-			round(g, 8)
 			text({ Size = UDim2.fromScale(1, 1), Text = "#" .. p.number .. "  " .. p.last, FontFace = FONT.title, TextSize = 17, TextColor3 = COL.ink }, g)
 			return g
 		end, function()
@@ -7075,7 +6742,7 @@ function Menu.openMatchTactics()
 end
 
 do
-	local shade, body = modal(matchLayer, "MATCH SETTINGS", 700, 440, 30)
+	local shade, body = modal(matchLayer, "MATCH SETTINGS", 700, 330, 30)
 	Menu.matchSettingsShade, Menu.matchSettingsBody = shade, body
 end
 
@@ -7088,7 +6755,6 @@ end
 do
 	local shade = button({ Size = UDim2.fromScale(1, 1), BackgroundTransparency = 0.4, BackgroundColor3 = Color3.new(0, 0, 0), Visible = false, ZIndex = 20 }, matchLayer)
 	local panel = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(400, 490), BackgroundColor3 = COL.bg2, ZIndex = 21 }, shade)
-	round(panel, 12)
 	outline(panel, COL.line, 1, 0.4)
 	text({ Position = UDim2.fromOffset(0, 18), Size = UDim2.new(1, 0, 0, 40), Text = "PAUSED", FontFace = FONT.title, TextSize = 32, TextColor3 = COL.cyan, ZIndex = 22 }, panel)
 	Menu.pauseBy = text({ Position = UDim2.fromOffset(0, 58), Size = UDim2.new(1, 0, 0, 20), FontFace = FONT.head, TextSize = 15, TextColor3 = COL.dim, ZIndex = 22 }, panel)
@@ -7103,7 +6769,7 @@ do
 			Menu.subOut = nil
 			Menu.openSubs()
 		end },
-		{ "CAMERA AND CONTROLS", function()
+		{ "CAMERA AND DISPLAY", function()
 			Menu.openMatchSettings()
 		end },
 		{ "QUIT TO MAIN MENU", function()
@@ -7150,7 +6816,6 @@ function openMenu(screenName)
 	task.spawn(setControls, false)
 	Controls.charging = false
 	Controls.pending = nil
-	Pilot.cue = nil
 	HUD.power = nil
 	Menu.pause.Visible = false
 	Menu.subsShade.Visible = false
@@ -7184,8 +6849,6 @@ function closeMenu()
 	Cam.mode = nil
 	Stamina.value = 100
 	HUD.refresh()
-	-- the match uses the control choices from your settings
-	sendControl()
 end
 
 ---------------------------------------------------------------- messages from the server
@@ -7361,9 +7024,6 @@ remote.OnClientEvent:Connect(function(kind, a, b, c)
 		local key = (keys[lastInput] or keys.kbm)[a] or ""
 		HUD.cueText.Text = "YOUR BALL  ·  " .. (words[a] or "PLAY IT") .. "  <font color=\"#5ef2e0\">" .. key .. "</font>"
 		HUD.cueUntil = (b or serverNow()) + 0.4
-		if typeof(c) == "Vector3" and type(b) == "number" then
-			Pilot.cue = { kind = a, tc = b, cp = c } -- movement assist runs here
-		end
 	end
 end)
 
@@ -7525,7 +7185,6 @@ end
 
 local function panel(parent, x, y, w, h)
 	local p = frame({ Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h), BackgroundColor3 = COL.panel, BackgroundTransparency = 0.08 }, parent)
-	round(p, 10)
 	outline(p, COL.line, 1, 0.65)
 	return p
 end
