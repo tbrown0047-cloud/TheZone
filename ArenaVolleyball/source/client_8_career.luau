@@ -743,7 +743,6 @@ function Menu.refreshProfileCard()
 	body:ClearAllChildren()
 	text({ Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(156, 18), Text = "WELCOME BACK", FontFace = FONT.title, TextSize = 13, TextColor3 = COL.teal, TextXAlignment = Enum.TextXAlignment.Left }, body)
 	text({ Position = UDim2.fromOffset(12, 28), Size = UDim2.fromOffset(156, 24), Text = string.upper(player.DisplayName), FontFace = FONT.title, TextSize = 19, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd }, body)
-	shirt(body, Teams.list[sel.home].primary, Menu.custom.number, 56, UDim2.fromOffset(140, 30))
 	local career = profile and profile.career
 	local online = profile and profile.online
 	local wins, losses = 0, 0

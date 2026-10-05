@@ -288,36 +288,13 @@ end
 
 ---------------------------------------------------------------- 3D players in the menus
 
--- kit art for the menus (no characters): a club shirt with a number, a glow behind it and,
--- if asked, a ball. set("me") uses your club and shirt number.
+-- the space where menu art would go: left blank on purpose
 function Menu.avatar(parent, props, _yaw)
 	local holder = frame({ BackgroundTransparency = 1 }, parent)
 	for key, value in props do
 		holder[key] = value
 	end
-	local art = { vp = holder }
-	function art.set(source)
-		holder:ClearAllChildren()
-		local team, number, ball
-		if source == "me" then
-			team, number = sel.home, Menu.custom and Menu.custom.number or 7
-		else
-			team, number, ball = source.team, source.number, source.ball
-		end
-		local w, h = holder.Size.X.Offset, holder.Size.Y.Offset
-		local size = math.floor(math.min(w, h) * 0.72)
-		local def = Teams.list[team] or Teams.list[1]
-		local glow = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.48), Size = UDim2.fromOffset(size * 1.25, size * 1.25), BackgroundColor3 = def.primary, BackgroundTransparency = 0.78 }, holder)
-		round(glow, size)
-		make("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.2), NumberSequenceKeypoint.new(1, 1) }), Rotation = 90 }, glow)
-		shirt(holder, def.primary, number, size, UDim2.fromScale(0.5, 0.46))
-		if ball then
-			local b = frame({ AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, size * 0.42, 0.46, size * 0.38), Size = UDim2.fromOffset(size * 0.3, size * 0.3), BackgroundColor3 = Color3.fromRGB(255, 214, 64) }, holder)
-			round(b, size)
-			make("UIStroke", { Color = Color3.fromRGB(40, 90, 210), Thickness = 3 }, b)
-		end
-	end
-	return art
+	return { vp = holder, set = function() end }
 end
 
 ---------------------------------------------------------------- shared front-screen pieces
