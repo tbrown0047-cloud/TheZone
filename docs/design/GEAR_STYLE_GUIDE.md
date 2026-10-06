@@ -42,7 +42,8 @@ Roblox view distance hides fine detail, so the shape must read first.
 Machine hardware uses the same language: matte hard-surface plates, exposed joints and cabling, small sensor lights, corporate-style markings. Keeps gear and enemies visually related.
 
 ## 6. Roblox production notes
-- **Triangle budget:** keep weapons modest, since first-person view meshes can afford slightly more than world props. Merge small parts and share materials.
+- **Target:** photorealistic weapons. No self-imposed triangle budget. Platform limits (per-mesh triangle cap, texture size) still apply at export; verify current values in the Roblox docs.
+- **Pipeline:** build a high-detail model in Blender, make a Roblox-ready low-poly version, and bake the detail into normal, roughness and ambient-occlusion maps. Use PBR materials (SurfaceAppearance). Split weapons into several meshes (receiver, magazine, attachments) to carry more detail.
 - **Texturing:** the look relies on materials. Use a shared texture atlas or material set (metal, polymer, grip, wear) and normal or roughness maps for brushed metal and grip texture.
 - **Attachments:** build as separate meshes with consistent attachment points so any module fits any compatible weapon.
 - **Lighting:** matte materials need no special lighting. Keep indicator lights tiny to avoid bloom and mobile cost.
@@ -58,3 +59,4 @@ Machine hardware uses the same language: matte hard-surface plates, exposed join
 - Fictional manufacturers: how many, and what each one's design signature is.
 - Final weapon list and class silhouettes for launch.
 - Hand-painted textures versus procedural-only for the first pass.
+- Whether hero weapons get a human texture-painting pass.
